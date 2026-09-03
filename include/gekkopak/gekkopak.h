@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 namespace gekkopak {
 
@@ -88,6 +89,7 @@ private:
     DeviceConfig config_;
     std::uint64_t allocated_bytes_ = 0;
     BufferHandle next_handle_ = 1;
+    std::unordered_map<BufferHandle, std::uint64_t> allocations_;
 };
 
 const char* to_string(JobType type);
