@@ -11,6 +11,9 @@ jobs:
   azahar-ntr-e2e:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
     steps:
       - name: Checkout GekkoPAK
         uses: actions/checkout@v4
@@ -18,7 +21,18 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y gcc-12 g++-12 clang lld llvm cmake ninja-build python3
+          sudo apt-get install -y gcc-12 g++-12 clang lld llvm cmake ninja-build python3 ccache
+
+      - name: Restore Azahar compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: azahar-2126-linux-gcc12-gekkopak-ntr-v1
+
+      - name: Configure compiler cache
+        run: |
+          ccache --set-config=max_size=$CCACHE_MAXSIZE
+          ccache --zero-stats
 
       - name: Run transport-only model
         run: bash ./prototype/azahar-ntr/scripts/run_model.sh
@@ -44,9 +58,12 @@ jobs:
             -DENABLE_TESTS=OFF \
             -DENABLE_LTO=OFF \
             -DCMAKE_C_COMPILER=gcc-12 \
-            -DCMAKE_CXX_COMPILER=g++-12
+            -DCMAKE_CXX_COMPILER=g++-12 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build azahar-src/build/gekkopak \
             --target citra_libretro --config Release -j 2
+          ccache --show-stats
 
       - name: Build ARM guest and validating frontend
         run: |
@@ -69,6 +86,7 @@ jobs:
               2>&1 | tee prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
           grep -q "NTR E2E PASS" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
           grep -q "Mapped GekkoPAK NTRCARD window" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+          grep -q "GekkoPAK NTR guest completed" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
 
       - name: Upload E2E log
         if: always()
