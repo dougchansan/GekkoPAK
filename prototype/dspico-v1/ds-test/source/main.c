@@ -213,28 +213,70 @@ static void run(bool full)
     LOG("done: %s\n", pf(sReport.overall_ok));
 }
 
+// Early boot progress marker.
+//
+// A blank screen tells you nothing about where a DS app died, so before any
+// libnds subsystem is brought up we paint the main screen directly from a
+// bitmap-mode framebuffer. Each stage advances the colour, so a hang is located
+// by eye without a debugger:
+//
+//   white  - ARM9 never reached main(); the ROM or boot path is at fault
+//   red    - reached main()
+//   yellow - video/VRAM configured
+//   green  - both text consoles up
+//   blue   - reached the main loop (normal running state)
+//
+// This is the "smallest isolated reproducer" rule applied to bring-up: it costs
+// a few lines and turns "white screen" into a specific failing stage.
+static void dbg_stage(u16 colour)
+{
+    videoSetMode(MODE_FB0);
+    vramSetBankA(VRAM_A_LCD);
+    for (int i = 0; i < 256 * 192; i++)
+        VRAM_A[i] = colour | BIT(15);
+}
+
 int main(void)
 {
+    powerOn(POWER_ALL_2D);
+    dbg_stage(RGB15(31, 0, 0));   // red: main() entered
+
     videoSetMode(MODE_0_2D);
     videoSetModeSub(MODE_0_2D);
     vramSetBankA(VRAM_A_MAIN_BG);
     vramSetBankC(VRAM_C_SUB_BG);
+    dbg_stage(RGB15(31, 31, 0));  // yellow: video configured
+
     consoleInit(&sTop, 3, BgType_Text4bpp, BgSize_T_256x256, 31, 0, true, true);
     consoleInit(&sBottom, 3, BgType_Text4bpp, BgSize_T_256x256, 31, 0, false, true);
+    // consoleInit reclaims VRAM_A for backgrounds, so the marker stops here and
+    // any further progress is reported as text.
 
     consoleSelect(&sBottom);
     iprintf("GekkoPAK DSpico v1 log\n");
     iprintf("A=quick X=full START=rerun\n");
     iprintf("SELECT=save report\n\n");
 
-    sFatReady = fatInitDefault();
-    iprintf("SD: %s\n", sFatReady ? "ready" : "unavailable");
+    // fatInitDefault() is NOT called at startup. This ROM is not dlditool
+    // patched with the DSpico DLDI driver, so libfat has no valid driver to
+    // probe and the call is a plausible early hang. SD export is optional to
+    // the benchmark, so it is deferred behind SELECT where a failure costs
+    // nothing but a message.
+    sFatReady = false;
+    iprintf("SD: deferred (press SELECT)\n");
 
     consoleSelect(&sTop);
     draw_status();
 
+    bool marked = false;
     while (pmMainLoop()) {
         swiWaitForVBlank();
+        if (!marked) {
+            // Reached the main loop: report it on the log screen, since VRAM_A
+            // now belongs to the console rather than the bitmap marker.
+            LOG("boot: reached main loop\n");
+            marked = true;
+        }
         scanKeys();
         u32 keys = keysDown();
         if (keys & KEY_A)
@@ -244,6 +286,11 @@ int main(void)
         else if (keys & KEY_START)
             run(sFullRun);
         else if (keys & KEY_SELECT) {
+            if (!sFatReady) {
+                LOG("init SD (libfat)...\n");
+                sFatReady = fatInitDefault();
+                LOG("SD: %s\n", sFatReady ? "ready" : "unavailable");
+            }
             if (sHaveReport)
                 write_report_files();
             else
