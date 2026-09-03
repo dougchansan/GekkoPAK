@@ -1,0 +1,75 @@
+name: Azahar NTRCARD E2E
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "prototype/azahar-ntr/**"
+      - ".github/workflows/azahar-ntr-e2e.yml"
+
+jobs:
+  azahar-ntr-e2e:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout GekkoPAK
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y gcc-12 g++-12 clang lld llvm cmake ninja-build python3
+
+      - name: Run transport-only model
+        run: ./prototype/azahar-ntr/scripts/run_model.sh
+
+      - name: Clone Azahar 2126.0
+        run: |
+          git clone --recursive --depth 1 --branch 2126.0 \
+            https://github.com/azahar-emu/azahar.git azahar-src
+
+      - name: Apply and verify GekkoPAK core overlay
+        run: |
+          python3 prototype/azahar-ntr/azahar_overlay/apply_overlay.py azahar-src
+          python3 prototype/azahar-ntr/azahar_overlay/verify_overlay.py azahar-src
+
+      - name: Build patched Azahar libretro core
+        run: |
+          cmake -S azahar-src -B azahar-src/build/gekkopak \
+            -DENABLE_LIBRETRO=ON \
+            -DENABLE_TESTS=OFF \
+            -DENABLE_LTO=OFF \
+            -DCMAKE_C_COMPILER=gcc-12 \
+            -DCMAKE_CXX_COMPILER=g++-12
+          cmake --build azahar-src/build/gekkopak \
+            --target citra_libretro --config Release -j 2
+
+      - name: Build ARM guest and validating frontend
+        run: |
+          ./prototype/azahar-ntr/scripts/build_guest.sh prototype/azahar-ntr/build/e2e
+          gcc -O2 -std=c11 -Wall -Wextra -Werror \
+            prototype/azahar-ntr/frontend/ntr_frontend.c -ldl \
+            -o prototype/azahar-ntr/build/e2e/ntr_frontend
+          mkdir -p prototype/azahar-ntr/build/e2e/{system,saves,assets}
+
+      - name: Run real Azahar NTRCARD guest E2E
+        run: |
+          CORE=azahar-src/build/gekkopak/bin/Release/azahar_libretro.so
+          test -f "$CORE"
+          GEKKOPAK_SYSTEM_DIR="$PWD/prototype/azahar-ntr/build/e2e/system" \
+          GEKKOPAK_SAVE_DIR="$PWD/prototype/azahar-ntr/build/e2e/saves" \
+          GEKKOPAK_ASSETS_DIR="$PWD/prototype/azahar-ntr/build/e2e/assets" \
+            timeout 60s prototype/azahar-ntr/build/e2e/ntr_frontend \
+              "$CORE" \
+              "$PWD/prototype/azahar-ntr/build/e2e/gekkopak_guest_ntr.elf" \
+              2>&1 | tee prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+          grep -q "NTR E2E PASS" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+          grep -q "Mapped GekkoPAK NTRCARD window" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+
+      - name: Upload E2E log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azahar-ntr-e2e-log
+          path: prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+          if-no-files-found: ignore
