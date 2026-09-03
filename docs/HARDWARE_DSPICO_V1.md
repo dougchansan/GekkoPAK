@@ -25,9 +25,28 @@ says so explicitly.
 | DSpico firmware built (RelWithDebInfo, real ROM) | PASS |
 | `gekkopak_test.nds` built | PASS |
 | UF2 validated and flashed to confirmed DSpico | PASS |
-| DSpico rebooted after flash | PASS (re-entered BOOTSEL: SD absent, expected) |
+| DSpico rebooted after flash | PASS — left BOOTSEL and held (see below) |
 | Test package staged on DSpico SD | PASS |
-| Physical 2DS XL run | **PENDING** — requires SD reinserted into the DSpico |
+| Physical 2DS XL run | **PENDING** — cartridge not yet inserted in the console |
+
+### Confirming the flash without picotool
+
+`picotool` was unavailable and the RP2 Boot interface had no WinUSB driver bound,
+so the firmware could not be read back. The flash was instead confirmed
+behaviourally, using the fact that DSpico reboots to BOOTSEL when it starts
+without an SD card:
+
+1. With the SD in the host card reader, the device sat in BOOTSEL. Ambiguous — a
+   blank RP2040 and a healthy DSpico with no SD look identical from the host.
+2. Inserting the SD changed nothing, which is correct: card insertion does not
+   reset the RP2040, and the firmware only probes for an SD at startup.
+3. Writing the UF2 with the SD present made the device disappear from USB within
+   300 ms and **stay** gone.
+
+Step 3 is the discriminating observation. The disappearance proves the
+bootloader accepted the image and reset; not coming back proves the firmware
+booted and found its SD, because a blank part or an SD-less DSpico would have
+re-enumerated as `RPI-RP2` immediately.
 
 ## Hardware
 
@@ -212,7 +231,9 @@ not GekkoPAK content).
 
 `picotool` was not available on the build host and the RP2 Boot interface had no
 WinUSB driver bound, so **the previously flashed firmware image could not be
-read back before flashing**. Only the SD-side loader files were preserved.
+read back before flashing**. Only the SD-side loader files were preserved. See
+"Confirming the flash without picotool" above for how the new image was verified
+instead.
 
 ## Next optimization
 
