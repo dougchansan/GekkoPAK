@@ -27,3 +27,12 @@ add_executable(gekkopak_sim
 )
 
 target_link_libraries(gekkopak_sim PRIVATE gekkopak)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(gekkopak_tests
+        tests/test_simulator.cpp
+    )
+    target_link_libraries(gekkopak_tests PRIVATE gekkopak)
+    add_test(NAME gekkopak_simulator COMMAND gekkopak_tests)
+endif()
