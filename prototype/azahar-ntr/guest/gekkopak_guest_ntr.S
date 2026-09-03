@@ -162,10 +162,11 @@ poll_again:
     mov r0, #CMD_FREE
     bl exec_hi
 
-    ldr r0, =PASS_MAGIC
-    str r0, [r11, #0]
+    /* COMPLETE must be acknowledged by the cartridge before PASS is visible. */
     mov r0, #CMD_COMPLETE
     bl exec_hi
+    ldr r0, =PASS_MAGIC
+    str r0, [r11, #0]
 
 finished:
     b finished
