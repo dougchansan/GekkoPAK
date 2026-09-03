@@ -29,7 +29,8 @@ says so explicitly.
 | Test package staged on DSpico SD | PASS |
 | Physical 2DS XL run (build 1) | **FAIL** — cart not detected by HOME menu; ROM relocation defect |
 | Corrected firmware built (no relocation) | PASS |
-| Corrected firmware flashed | **PENDING** — needs DSpico back in BOOTSEL |
+| Corrected firmware flashed | PASS — identity verified, reset at t+0.3 s |
+| Physical 2DS XL run (build 2) | **PENDING** — cartridge going into the console |
 
 ### Confirming the flash without picotool
 
