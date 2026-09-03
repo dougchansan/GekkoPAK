@@ -1,0 +1,72 @@
+name: DSpico GekkoPAK v1
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "prototype/dspico-v1/**"
+      - ".github/workflows/dspico-v1.yml"
+
+concurrency:
+  group: dspico-gekkopak-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-dspico-overlay:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout GekkoPAK
+        uses: actions/checkout@v4
+
+      - name: Checkout DSpico develop
+        uses: actions/checkout@v4
+        with:
+          repository: LNH-team/dspico-firmware
+          ref: develop
+          path: dspico-src
+          submodules: false
+
+      - name: Checkout DSpico-pinned Pico SDK
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: 6a7db34ff63345a7badec79ebea3aaef1712f374
+          path: dspico-src/pico-sdk
+          submodules: true
+
+      - name: Install RP2040 toolchain
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y gcc-arm-none-eabi cmake ninja-build python3
+
+      - name: Apply and verify GekkoPAK overlay
+        run: |
+          python3 prototype/dspico-v1/apply_overlay.py dspico-src
+          python3 prototype/dspico-v1/verify_overlay.py dspico-src
+
+      - name: Create compile-only dummy ROM
+        run: |
+          mkdir -p dspico-src/roms
+          dd if=/dev/zero of=dspico-src/roms/default.nds bs=512 count=1 status=none
+
+      - name: Configure and build RP2040 firmware
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/dspico-src/pico-sdk
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: |
+          cmake -G Ninja -S dspico-src -B dspico-src/build-gekkopak \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build dspico-src/build-gekkopak -j 4
+          test -f dspico-src/build-gekkopak/DSpico.uf2
+          arm-none-eabi-size dspico-src/build-gekkopak/DSpico.elf
+
+      - name: Upload compile-proof UF2
+        uses: actions/upload-artifact@v4
+        with:
+          name: dspico-gekkopak-v1-compile-proof
+          path: |
+            dspico-src/build-gekkopak/DSpico.uf2
+            dspico-src/build-gekkopak/DSpico.elf
+          if-no-files-found: error
+          retention-days: 7
