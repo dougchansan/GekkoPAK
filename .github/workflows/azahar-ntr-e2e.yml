@@ -23,10 +23,14 @@ jobs:
       - name: Run transport-only model
         run: bash ./prototype/azahar-ntr/scripts/run_model.sh
 
-      - name: Clone Azahar 2126.0
+      - name: Fetch Azahar 2126.0 unified source
         run: |
-          git clone --recursive --depth 1 --branch 2126.0 \
-            https://github.com/azahar-emu/azahar.git azahar-src
+          curl -L --fail --retry 3 \
+            -o azahar-source.tar.xz \
+            https://github.com/azahar-emu/azahar/releases/download/2126.0/azahar-unified-source-2126.0.tar.xz
+          echo "c2764473fa465f88f3b8c90efd56b3aa0a6244919a49742eeb407fe42bd869a8  azahar-source.tar.xz" | sha256sum -c -
+          mkdir azahar-src
+          tar -xJf azahar-source.tar.xz -C azahar-src --strip-components=1
 
       - name: Apply and verify GekkoPAK core overlay
         run: |
