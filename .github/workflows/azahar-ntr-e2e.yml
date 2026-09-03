@@ -65,6 +65,14 @@ jobs:
             --target citra_libretro --config Release -j 2
           ccache --show-stats
 
+      - name: Upload patched Azahar core
+        uses: actions/upload-artifact@v4
+        with:
+          name: azahar-2126-gekkopak-ntr-core
+          path: azahar-src/build/gekkopak/bin/Release/azahar_libretro.so
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Build ARM guest and validating frontend
         run: |
           bash ./prototype/azahar-ntr/scripts/build_guest.sh prototype/azahar-ntr/build/e2e
