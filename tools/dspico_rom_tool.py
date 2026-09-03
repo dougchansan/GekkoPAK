@@ -1,22 +1,34 @@
 #!/usr/bin/env python3
 """Prepare a homebrew .nds so a DSpico can serve it as roms/default.nds.
 
-DSpico is a cartridge emulator, not a loader: the console runs the full NTR boot
-sequence against it. That imposes two requirements a devkitPro homebrew ROM does
-not meet on its own.
+DSpico is a cartridge emulator, not a loader: the console runs its full NTR boot
+sequence against it, so the ROM must look like a real cartridge. A devkitPro
+homebrew ROM needs three fixups, all applied by default.
 
-1. KEY1 command encryption.
+1. NTR-only unit code (header 0x12).
+   DSpico takes its advertised card ID straight from this byte
+   (src/main.cpp: `if (gDefaultRom[0x12] & 2) cardId = CARD_ID_TWL`). devkitPro
+   emits 0x02, so the cartridge claims to be TWL-capable and the console runs
+   the TWL secure handshake. DSpico then derives blowfish from
+   `twlArea = u16@0x92 * 0x80000`, which homebrew leaves at zero, so it keys off
+   zeros, the handshake fails, and the console never shows the cartridge at all.
+
+2. KEY1 command encryption (header padding at 0x1600 / 0x1C00).
    src/ntrCardRomNorm.c calls bf_init() with pointers straight into the ROM
-   image at 0x1600 (P table) and 0x1C00 (S boxes). A homebrew ROM has zeros
-   there, so every secure-mode command decrypts to garbage and the console never
-   reaches game mode. The table has to be present in the image.
+   image. DSpico carries no key of its own; a homebrew ROM has zeros there.
+   The table lands well before arm9_rom_offset, so injecting it is harmless.
 
-2. The secure area.
-   GBATEK: a secure area exists only when arm9_rom_offset is in 0x4000..0x7FFF.
-   devkitPro emits 0x4000, so the console tries to read an encrypted secure area
-   that homebrew does not have. Relocating the ARM9 binary to 0x8000 removes the
-   secure area from the picture entirely, which is how homebrew boots from real
-   cartridge hardware.
+3. Header CRC (0x15E).
+   Editing anything in the first 0x15E bytes invalidates it. Do NOT rely on
+   `ndstool -f` for this: on ndstool 2.3.1 it exits 0 without touching the CRC,
+   which silently produces a ROM the console rejects.
+
+What NOT to do: relocating the ARM9 binary past the secure area to 0x8000.
+GBATEK says a secure area exists only for arm9_rom_offset 0x4000..0x7FFF, which
+reads like an argument for relocating. On a 2DS XL the relocated image was
+rejected outright. The working loader already on this hardware (_picoboot.nds)
+keeps ARM9 at 0x4000 with the secure-area region holding the start of the ARM9
+binary. --relocate is retained for experiments only.
 
 The KEY1 table is Nintendo copyrighted data. It is NEVER stored in this
 repository: pass --keytable pointing at your own dumped ARM7 BIOS (the table is
@@ -27,8 +39,6 @@ Usage:
       --rom  prototype/dspico-v1/ds-test/gekkopak_test.nds \
       --keytable /path/to/bios7.bin \
       --out  dspico-firmware/roms/default.nds
-
-Run `ndstool -f <out>` afterwards to refresh the header CRC.
 """
 
 import argparse
@@ -121,6 +131,65 @@ def relocate_past_secure_area(rom):
     return rom, shift
 
 
+def crc16(data, init=0xFFFF):
+    """Nitro header CRC: reflected CRC-16 with polynomial 0xA001."""
+    crc = init
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0xA001 if crc & 1 else 0)
+    return crc & 0xFFFF
+
+
+def fix_header_crc(rom):
+    """Recompute the header CRC at 0x15E over bytes 0x000..0x15D.
+
+    Do not delegate this to `ndstool -f`: on ndstool 2.3.1 it exits 0 without
+    touching the CRC, so a ROM edited anywhere in the first 0x15E bytes ships
+    with a stale checksum and the console rejects the cartridge outright.
+    """
+    stored = struct.unpack_from("<H", rom, 0x15E)[0]
+    calc = crc16(bytes(rom[0x000:0x15E]))
+    if stored != calc:
+        struct.pack_into("<H", rom, 0x15E, calc)
+        print(f"header CRC : 0x{stored:04X} -> 0x{calc:04X}")
+    else:
+        print(f"header CRC : 0x{calc:04X} (already correct)")
+
+
+def force_ntr_unit_code(rom):
+    """Present the image as an NTR-only cartridge.
+
+    DSpico picks its advertised card ID straight from this byte
+    (src/main.cpp: `if (gDefaultRom[0x12] & 2) cardId = CARD_ID_TWL`). devkitPro
+    emits 0x02 (NTR+TWL hybrid) by default, which makes the console run the TWL
+    secure handshake: DSpico then derives blowfish from
+    `twlArea = u16@0x92 * 0x80000`, and homebrew leaves 0x92 as zero, so it
+    keys off zeros and the handshake fails before the cartridge is ever shown.
+
+    Clearing the byte forces the NTR path, which is the one the injected NTR
+    key table actually serves.
+    """
+    previous = rom[0x12]
+    if previous == 0x00:
+        print("unit code  : already 0x00 (NTR only)")
+        return
+    rom[0x12] = 0x00
+    print(f"unit code  : 0x{previous:02X} -> 0x00 (NTR only; was advertising a TWL card ID)")
+
+
+def fix_device_capacity(rom):
+    """Make the declared chip size cover the image."""
+    size = len(rom)
+    capacity = 0
+    while (128 * 1024) << capacity < size:
+        capacity += 1
+    if rom[0x14] != capacity:
+        print(f"capacity   : 0x{rom[0x14]:02X} -> 0x{capacity:02X} "
+              f"({(128 << capacity)} KiB for a {size} byte image)")
+        rom[0x14] = capacity
+
+
 def inject_keytable(rom, table):
     need = ROM_S_BOX_OFFSET + S_BOX_LEN
     if len(rom) < need:
@@ -137,8 +206,11 @@ def main():
     ap.add_argument("--keytable", required=True,
                     help="ARM7 BIOS dump or raw 0x1048-byte KEY1 table (never committed)")
     ap.add_argument("--out", required=True, help="output ROM for dspico-firmware/roms/")
-    ap.add_argument("--no-relocate", action="store_true",
-                    help="keep arm9_rom_offset as-is (use when chainloading instead of booting)")
+    ap.add_argument("--relocate", action="store_true",
+                    help="move ARM9 past the secure area to 0x8000. Rejected by a "
+                         "2DS XL in testing; kept only for experiments.")
+    ap.add_argument("--keep-unit-code", action="store_true",
+                    help="leave header byte 0x12 alone instead of forcing NTR-only")
     args = ap.parse_args()
 
     rom = bytearray(open(args.rom, "rb").read())
@@ -148,9 +220,13 @@ def main():
     print(f"title/code : {rom[0:12].decode(errors='replace')} / {rom[12:16].decode(errors='replace')}")
 
     table = load_keytable(args.keytable)
-    if not args.no_relocate:
+    if args.relocate:
         rom, _ = relocate_past_secure_area(rom)
+    if not args.keep_unit_code:
+        force_ntr_unit_code(rom)
     inject_keytable(rom, table)
+    fix_device_capacity(rom)
+    fix_header_crc(rom)
 
     # Pad to a 512-byte boundary; DSpico rounds romSize up to a page anyway.
     if len(rom) % 512:
@@ -160,7 +236,6 @@ def main():
         f.write(rom)
     print(f"output     : {args.out} ({len(rom)} bytes)")
     print(f"sha256     : {hashlib.sha256(bytes(rom)).hexdigest()}")
-    print("next       : ndstool -f " + args.out)
     return 0
 
 
