@@ -1,0 +1,17 @@
+{
+  "target": "dspico-v1",
+  "console": "New 2DS XL",
+  "cartridge": "DSpico RP2040",
+  "protocol": "GekkoPAK v1 (F0-F5, 512-byte block transport)",
+  "status": "pending-console-run",
+  "note": "Firmware built and flashed; console run not yet performed. No values are recorded here because the point of this exercise is to replace the model's assumptions with measurements, and placeholder numbers would be indistinguishable from data. Populate with tools/parse_hw_results.py.",
+  "latency_us": {},
+  "payload_sweep_us": {},
+  "batch_us_per_job": {},
+  "bandwidth_mib_s": { "write": null, "read": null },
+  "model_comparison": {
+    "assumed_bandwidth_mib_s": 6.0,
+    "assumed_cmd_latency_us": 25.0,
+    "measured_cmd_latency_us": null
+  }
+}
