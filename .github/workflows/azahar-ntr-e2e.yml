@@ -21,7 +21,7 @@ jobs:
           sudo apt-get install -y gcc-12 g++-12 clang lld llvm cmake ninja-build python3
 
       - name: Run transport-only model
-        run: ./prototype/azahar-ntr/scripts/run_model.sh
+        run: bash ./prototype/azahar-ntr/scripts/run_model.sh
 
       - name: Clone Azahar 2126.0
         run: |
@@ -46,7 +46,7 @@ jobs:
 
       - name: Build ARM guest and validating frontend
         run: |
-          ./prototype/azahar-ntr/scripts/build_guest.sh prototype/azahar-ntr/build/e2e
+          bash ./prototype/azahar-ntr/scripts/build_guest.sh prototype/azahar-ntr/build/e2e
           gcc -O2 -std=c11 -Wall -Wextra -Werror \
             prototype/azahar-ntr/frontend/ntr_frontend.c -ldl \
             -o prototype/azahar-ntr/build/e2e/ntr_frontend
