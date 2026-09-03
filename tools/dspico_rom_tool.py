@@ -2,43 +2,55 @@
 """Prepare a homebrew .nds so a DSpico can serve it as roms/default.nds.
 
 DSpico is a cartridge emulator, not a loader: the console runs its full NTR boot
-sequence against it, so the ROM must look like a real cartridge. A devkitPro
-homebrew ROM needs three fixups, all applied by default.
+sequence against it, so the ROM must look like a real cartridge.
+
+THIS SCRIPT IS NOT SUFFICIENT ON ITS OWN. A bootable cartridge ROM must be run
+through DSRomEncryptor (https://github.com/Gericom/DSRomEncryptor), which is the
+step the DSpico Bootloader README documents. That tool does two things this
+script deliberately does not attempt:
+
+  * it inserts the NTR key blocks *transformed by the ROM game code*
+    (KeyTransform.TransformTable(gameCode, 2, 8, ntrBlowfish)), not the raw
+    ARM7 BIOS table; and
+  * it encrypts the secure area at 0x4000-0x4800 and writes the encrypted
+    "encryObj" marker, which is what the console validates during boot.
+
+Raw key injection without those was tried on hardware and the 2DS XL never
+showed the cartridge at all.
+
+The intended pipeline is therefore:
+
+  python tools/dspico_rom_tool.py --rom gekkopak_test.nds --no-keys --out prepped.nds
+  DSRomEncryptor prepped.nds default.nds
+
+What this script contributes are the fixups DSRomEncryptor does not do, because
+they are artefacts of building with devkitPro rather than BlocksDS:
 
 1. NTR-only unit code (header 0x12).
    DSpico takes its advertised card ID straight from this byte
    (src/main.cpp: `if (gDefaultRom[0x12] & 2) cardId = CARD_ID_TWL`). devkitPro
    emits 0x02, so the cartridge claims to be TWL-capable and the console runs
-   the TWL secure handshake. DSpico then derives blowfish from
-   `twlArea = u16@0x92 * 0x80000`, which homebrew leaves at zero, so it keys off
-   zeros, the handshake fails, and the console never shows the cartridge at all.
+   the TWL secure handshake against a ROM with no TWL area. Clearing it also
+   means DSRomEncryptor needs no TWL blowfish key.
 
-2. KEY1 command encryption (header padding at 0x1600 / 0x1C00).
-   src/ntrCardRomNorm.c calls bf_init() with pointers straight into the ROM
-   image. DSpico carries no key of its own; a homebrew ROM has zeros there.
-   The table lands well before arm9_rom_offset, so injecting it is harmless.
+2. Secure-area CRC (header 0x6C) cleared under --no-keys.
+   DSRomEncryptor only encrypts when 0x6C disagrees with what it computes.
+   BlocksDS leaves 0x6C unset so the check always fires; ndstool fills it in,
+   which makes a devkitPro ROM look already-prepared and silently skips
+   encryption.
 
-3. Header CRC (0x15E).
-   Editing anything in the first 0x15E bytes invalidates it. Do NOT rely on
-   `ndstool -f` for this: on ndstool 2.3.1 it exits 0 without touching the CRC,
-   which silently produces a ROM the console rejects.
+3. Device capacity (0x14) and header CRC (0x15E).
+   Do NOT rely on `ndstool -f` for the CRC: on ndstool 2.3.1 it exits 0 without
+   touching it.
 
 What NOT to do: relocating the ARM9 binary past the secure area to 0x8000.
 GBATEK says a secure area exists only for arm9_rom_offset 0x4000..0x7FFF, which
-reads like an argument for relocating. On a 2DS XL the relocated image was
-rejected outright. The working loader already on this hardware (_picoboot.nds)
-keeps ARM9 at 0x4000 with the secure-area region holding the start of the ARM9
-binary. --relocate is retained for experiments only.
+reads like an argument for relocating. A relocated image was rejected outright
+by a 2DS XL. --relocate is retained for experiments only.
 
-The KEY1 table is Nintendo copyrighted data. It is NEVER stored in this
-repository: pass --keytable pointing at your own dumped ARM7 BIOS (the table is
-0x1048 bytes at offset 0x30) or at a raw 0x1048-byte table you already hold.
-
-Usage:
-  python tools/dspico_rom_tool.py \
-      --rom  prototype/dspico-v1/ds-test/gekkopak_test.nds \
-      --keytable /path/to/bios7.bin \
-      --out  dspico-firmware/roms/default.nds
+Blowfish tables are Nintendo copyrighted data and are NEVER stored in this
+repository. --keytable exists for the legacy raw-injection path; prefer
+--no-keys and let DSRomEncryptor handle keys from your own BIOS dump.
 """
 
 import argparse
@@ -157,6 +169,29 @@ def fix_header_crc(rom):
         print(f"header CRC : 0x{calc:04X} (already correct)")
 
 
+def clear_secure_area_crc(rom):
+    """Zero the secure-area CRC at 0x6C so DSRomEncryptor will act.
+
+    DSRomEncryptor encrypts the secure area only when the stored CRC disagrees
+    with the CRC it computes over [arm9_rom_offset, 0x8000):
+
+        if (romDataSpan.ReadU16Le(0x6C) != secureCrc) { ...encrypt...; store }
+
+    BlocksDS, which the DSpico bootloader is built with, leaves 0x6C unset, so
+    the check always fires. ndstool computes and stores it, so a devkitPro ROM
+    looks already-prepared and encryption is silently skipped - producing a ROM
+    with valid key blocks but a plaintext secure area, which the console
+    rejects. Clearing it restores the intended behaviour; DSRomEncryptor writes
+    the correct value back after encrypting.
+    """
+    previous = struct.unpack_from("<H", rom, 0x6C)[0]
+    if previous == 0:
+        print("secure CRC : already 0x0000")
+        return
+    struct.pack_into("<H", rom, 0x6C, 0)
+    print(f"secure CRC : 0x{previous:04X} -> 0x0000 (so DSRomEncryptor encrypts)")
+
+
 def force_ntr_unit_code(rom):
     """Present the image as an NTR-only cartridge.
 
@@ -203,8 +238,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--rom", required=True, help="input homebrew .nds")
-    ap.add_argument("--keytable", required=True,
-                    help="ARM7 BIOS dump or raw 0x1048-byte KEY1 table (never committed)")
+    ap.add_argument("--keytable",
+                    help="ARM7 BIOS dump or raw 0x1048-byte KEY1 table (never committed). "
+                         "Omit with --no-keys when DSRomEncryptor will insert them.")
+    ap.add_argument("--no-keys", action="store_true",
+                    help="skip key injection. Use this when the output is going through "
+                         "DSRomEncryptor, which inserts the key blocks AND encrypts the "
+                         "secure area - the part this script cannot do.")
     ap.add_argument("--out", required=True, help="output ROM for dspico-firmware/roms/")
     ap.add_argument("--relocate", action="store_true",
                     help="move ARM9 past the secure area to 0x8000. Rejected by a "
@@ -219,12 +259,20 @@ def main():
     print(f"input      : {args.rom} ({len(rom)} bytes)")
     print(f"title/code : {rom[0:12].decode(errors='replace')} / {rom[12:16].decode(errors='replace')}")
 
-    table = load_keytable(args.keytable)
+    if args.no_keys:
+        table = None
+        print("keys       : skipped (--no-keys; DSRomEncryptor will insert them)")
+        clear_secure_area_crc(rom)
+    elif args.keytable:
+        table = load_keytable(args.keytable)
+    else:
+        raise SystemExit("need --keytable, or --no-keys if DSRomEncryptor will insert them")
     if args.relocate:
         rom, _ = relocate_past_secure_area(rom)
     if not args.keep_unit_code:
         force_ntr_unit_code(rom)
-    inject_keytable(rom, table)
+    if table is not None:
+        inject_keytable(rom, table)
     fix_device_capacity(rom)
     fix_header_crc(rom)
 
