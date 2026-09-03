@@ -1,6 +1,7 @@
 #include "gekkopak/gekkopak.h"
 
 #include <iomanip>
+#include <new>
 #include <sstream>
 #include <stdexcept>
 
