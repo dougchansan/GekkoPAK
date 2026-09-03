@@ -4,11 +4,23 @@
 
 GekkoPAK explores an enhancement-chip-style cartridge that works alongside a native CTR static-recomp runtime such as GekkoCTR. The cartridge is **not** intended to extend FCRAM directly. Instead, it provides local memory and asynchronous compute engines for workloads whose compute-to-transfer ratio makes cartridge offload worthwhile.
 
-> Status: Phase 0/1 prototype — host simulator working and real ARM guest ↔ virtual GekkoPAK transactions passing inside Azahar 2126.0 in New 3DS mode.
+> Status: **Phase 2 emulator/transport prototype.** The host simulator passes, a real ARMv6K guest passes the full GekkoPAK lifecycle inside Azahar, and the NTRCARD bring-up protocol passes through a genuinely mapped `0x1EC64000` register page. The source-patched Azahar core backend compiles successfully; its dedicated core-side NTR E2E runtime gate is being validated separately.
 
-## Current emulator milestone
+## Current milestones
 
-The first real-emulator prototype now boots an ARMv6K guest through Azahar and completes this guest-owned command sequence:
+### Host model
+
+`libgekkopak` models:
+
+- separate TX/RX bandwidth;
+- command latency;
+- accelerator throughput;
+- persistent accelerator-local memory;
+- job crossover versus a supplied ARM11 software time.
+
+### Real ARM guest in Azahar
+
+The ARM guest completes:
 
 ```text
 HELLO -> GET_CAPS -> ALLOC -> UPLOAD -> SUBMIT
@@ -16,9 +28,63 @@ HELLO -> GET_CAPS -> ALLOC -> UPLOAD -> SUBMIT
       -> COLLECT -> FREE -> COMPLETE
 ```
 
-The guest uploads real data from emulated 3DS RAM into modeled accelerator-local RAM; the regression trace validates the transfer checksum and asynchronous job lifecycle. The current modeled DSP-style job is 2530 us versus a supplied 3500 us ARM11 baseline (1.383x). These timing values remain simulated assumptions, not physical-cartridge measurements.
+Deterministic bring-up result:
 
-See [`docs/AZAHAR_E2E.md`](docs/AZAHAR_E2E.md).
+```text
+protocol        : 1.0
+capabilities    : 0x0000000f
+local RAM       : 32 MiB
+allocation      : handle 1
+job             : handle 1
+modeled offload : 2530 us
+software base   : 3500 us
+speedup         : 1.383x
+payload checksum: 0xf269b734
+```
+
+Those timing values are modeled assumptions, not physical-cartridge measurements.
+
+### NTRCARD register transport
+
+The current guest talks through the legacy gamecard register window rather than a high-level emulator mailbox:
+
+```text
+ARM guest
+   |
+   v
+0x1EC64000 guest mapping
+0x10164000 physical NTRCARD page
+   |
+   +-- ROMCNT
+   +-- 8-byte command register
+   +-- 32-bit FIFO
+   |
+   v
+GekkoPAK device
+```
+
+The production ARM guest completes the cold-start sequence in **46 low-level wire transactions**. A stock-Azahar mapped-page development harness reproduces the complete deterministic PASS with ordinary guest CPU loads/stores and a clean shutdown.
+
+See:
+
+- [`docs/AZAHAR_E2E.md`](docs/AZAHAR_E2E.md)
+- [`docs/AZAHAR_NTR_INJECTED_PASS.md`](docs/AZAHAR_NTR_INJECTED_PASS.md)
+- [`prototype/azahar-ntr/README.md`](prototype/azahar-ntr/README.md)
+
+### Batched NTR v1 target
+
+The F0-F3 protocol is deliberately verbose for bring-up. The planned F4/F5 transport uses the same 512-byte data-phase primitives already demonstrated by DSpico.
+
+Current modeled steady-state control path:
+
+```text
+F0-F3: 21 transactions
+v1:     3 transactions
+```
+
+Under the provisional 6 MiB/s / 25 us command assumptions, the model reduces bus/control time from about **530 us to 238 us** despite moving full 512-byte blocks.
+
+See [`docs/NTR_WIRE_V1.md`](docs/NTR_WIRE_V1.md).
 
 ## Goals
 
@@ -56,8 +122,10 @@ Candidate accelerators include:
 include/gekkopak/        Public C++ API
 src/                     Host reference implementation
 sim/                     Virtual GekkoPAK CLI / experiments
-prototype/azahar/        Real Azahar ARM-guest end-to-end prototype
-docs/                    Architecture, protocol, emulator results and roadmap
+prototype/azahar/        Initial Azahar ARM-guest mailbox prototype
+prototype/azahar-ntr/    NTRCARD register/device prototype and source overlay
+prototype/dspico/        DSpico hardware transport integration notes
+docs/                    Architecture, protocols, emulator results and roadmap
 ```
 
 ## Build
@@ -78,28 +146,34 @@ cmake --build build --config Release
 .\build\Release\gekkopak_sim.exe
 ```
 
-## Azahar end-to-end prototype
+## Azahar prototypes
 
-The emulator binary is not vendored. With a compatible Linux x86_64 Azahar libretro core:
+The emulator binary is not vendored.
+
+Initial mailbox E2E:
 
 ```bash
 export AZAHAR_CORE=/path/to/azahar_libretro.so
 ./prototype/azahar/run_e2e.sh
 ```
 
-This builds the ARMv6K guest, loads it through Azahar in New 3DS mode, bridges the guest mailbox via libretro memory maps, and validates the resulting JSONL transaction trace.
+NTRCARD model and source-patched backend:
 
-## Phase 0 success criteria
+```bash
+./prototype/azahar-ntr/scripts/run_model.sh
+```
 
-Phase 0 is successful when we can:
+The dedicated `Azahar NTRCARD E2E` GitHub Actions workflow builds Azahar 2126.0 from its verified unified-source archive, applies the GekkoPAK core overlay, builds the ARM guest and validation frontend, and runs the NTR guest against the patched core.
 
-1. express accelerator work through a transport-independent API;
-2. model TX/RX bandwidth and command latency;
-3. allocate persistent accelerator-local memory;
-4. estimate offload time versus a supplied ARM11 software time;
-5. sweep hardware assumptions and identify the crossover point where offload wins.
+## Phase status
 
-The host model satisfies these items. The Azahar prototype additionally demonstrates that the guest-facing protocol can execute from ARM code inside an emulated New 3DS environment.
+- **Phase 0 — virtual hardware model:** complete for the initial timing/local-memory model.
+- **Phase 1 — GekkoCTR workload integration:** planned; needs real recomp traces.
+- **Phase 2 — Azahar virtual device:** active; ARM guest and mapped NTR transport pass, source-patched core runtime validation in progress.
+- **Phase 2.1 — batched NTR transport:** design and transfer-budget regression started.
+- **Phase 3 — real 2DS XL ↔ DSpico measurements:** next hardware gate.
+- **Phase 4 — RP2350 extended cartridge:** gated on measured transport data.
+- **Phase 5 — FPGA kernel:** gated on measured GekkoCTR workload wins.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
