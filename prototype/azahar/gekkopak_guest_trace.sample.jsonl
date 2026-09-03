@@ -1,0 +1,10 @@
+{"seq":1,"cmd":"HELLO","arg":[0,0,0,0],"result":0,"out":[65536,15,33554432,1],"payload_len":0}
+{"seq":2,"cmd":"GET_CAPS","arg":[0,0,0,0],"result":0,"out":[15,33554432,6291456,25],"payload_len":0}
+{"seq":3,"cmd":"ALLOC","arg":[4096,0,0,0],"result":0,"out":[1,4096,0,0],"payload_len":0}
+{"seq":4,"cmd":"UPLOAD","arg":[1,0,0,0],"result":0,"out":[16,4067014452,0,0],"payload_len":16}
+{"seq":5,"cmd":"SUBMIT","arg":[1,1,250000,3500],"result":0,"out":[1,2530,0,0],"payload_len":0}
+{"seq":6,"cmd":"POLL","arg":[1,0,0,0],"result":0,"out":[0,1,0,0],"payload_len":0}
+{"seq":7,"cmd":"POLL","arg":[1,0,0,0],"result":0,"out":[1,0,0,0],"payload_len":0}
+{"seq":8,"cmd":"COLLECT","arg":[1,0,0,0],"result":0,"out":[2530,1383,4067014452,3500],"payload_len":0}
+{"seq":9,"cmd":"FREE","arg":[1,0,0,0],"result":0,"out":[0,0,0,0],"payload_len":0}
+{"seq":10,"cmd":"COMPLETE","arg":[0,0,0,0],"result":0,"out":[1397965136,0,0,0],"payload_len":0}
