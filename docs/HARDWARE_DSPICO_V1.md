@@ -27,7 +27,9 @@ says so explicitly.
 | UF2 validated and flashed to confirmed DSpico | PASS |
 | DSpico rebooted after flash | PASS — left BOOTSEL and held (see below) |
 | Test package staged on DSpico SD | PASS |
-| Physical 2DS XL run | **PENDING** — cartridge not yet inserted in the console |
+| Physical 2DS XL run (build 1) | **FAIL** — cart not detected by HOME menu; ROM relocation defect |
+| Corrected firmware built (no relocation) | PASS |
+| Corrected firmware flashed | **PENDING** — needs DSpico back in BOOTSEL |
 
 ### Confirming the flash without picotool
 
@@ -80,15 +82,16 @@ VID/PID, the PnP instance serial, and the `version=` field in the bootloader's
 
 | Artifact | SHA-256 |
 |---|---|
-| `DSpico-GekkoPAK.uf2` (639488 B, 1249 blocks) | `a599457ca639b5d71dacf187809c354e3bbdfe8fe85cd646f797047f20b4e144` |
+| `DSpico-GekkoPAK.uf2` (606720 B, 1185 blocks) — current | `77b42823945a1cbcc828c459fbb40306df8603eb4c8397d0e5cfa97c150d0b6d` |
+| `DSpico-GekkoPAK.uf2` (639488 B, 1249 blocks) — build 1, rejected | `a599457ca639b5d71dacf187809c354e3bbdfe8fe85cd646f797047f20b4e144` |
 | `gekkopak_test.nds` (260096 B) | `16bd2afc1e95986586583d4f89b30f926c038cf86fd165c0cb5bb4862d51950e` |
-| embedded `roms/default.nds` (276480 B) | `3096ae6eb064ced5337d10778f2f2caaf3e1229a350d24bfe7ffdbe0fac49f4b` |
+| embedded `roms/default.nds` (260096 B) — current | `7819eee874f54a4cfacfade3c2a3db40ac43406c7e7e5082aea5abc8c4ac96b2` |
 
 `arm-none-eabi-size DSpico.elf`:
 
 ```
    text	   data	    bss	    dec	    hex
- 319516	      0	 216096	 535612	  82c3c
+ 303132	      0	 216096	 519228	  7ec3c
 ```
 
 216 KiB of BSS on a 264 KiB RP2040 is worth watching: 64 KiB of it is the
@@ -96,28 +99,62 @@ GekkoPAK local pool (`GEKKOPAK_LOCAL_BYTES`), and the two 512-byte block
 buffers plus DSpico's own SD and USB buffers account for the rest. There is
 headroom, but not enough to raise the local pool much without moving it.
 
-## Two things a homebrew ROM needs before DSpico can serve it
+## Preparing a homebrew ROM for DSpico
 
-This was the main non-obvious result of bring-up, and it is a property of the
-cartridge-emulation model rather than of GekkoPAK.
+DSpico is a cartridge emulator, not a loader, so the ROM has to survive the
+console's own NTR boot. Getting this right took one wrong attempt; both the
+attempt and the correction are recorded here because the reasoning matters.
 
-**1. KEY1 command encryption.** `src/ntrCardRomNorm.c:98` calls `bf_init()` with
-pointers straight into the ROM image at `0x1600` (P table) and `0x1C00`
-(S boxes). DSpico does not carry its own key; it reads whatever the ROM has
-there. A devkitPro homebrew ROM has zeros, so every secure-mode command
-decrypts to garbage and the console never reaches game mode.
+### KEY1 command encryption
 
-**2. The secure area.** Per GBATEK a secure area exists only when
-`arm9_rom_offset` is in `0x4000..0x7FFF`. devkitPro emits `0x4000`, so the
-console tries to read an encrypted secure area that homebrew does not have.
-Relocating the ARM9 binary to `0x8000` removes the secure area from the boot
-path entirely — which is how homebrew boots from real cartridge hardware.
+`src/ntrCardRomNorm.c:98` calls `bf_init()` with pointers straight into the ROM
+image at `0x1600` (P table) and `0x1C00` (S boxes). DSpico carries no key of its
+own — it uses whatever the ROM has there, and a devkitPro homebrew ROM has
+zeros. The upstream README states the requirement explicitly. The table lands in
+header padding well before `arm9_rom_offset`, so injecting it is non-destructive.
 
-`tools/dspico_rom_tool.py` does both, and refuses to run on a ROM with
-overlays (whose tables carry absolute offsets it does not fix up). The KEY1
-table is Nintendo copyrighted data and is **never** stored in this repository:
-the tool takes `--keytable` pointing at a user-supplied ARM7 BIOS dump (table
-at `+0x30`, `0x1048` bytes) and sanity-checks its entropy before use.
+The KEY1 table is Nintendo copyrighted data and is **never** stored in this
+repository: `tools/dspico_rom_tool.py` takes `--keytable` pointing at a
+user-supplied ARM7 BIOS dump (table at `+0x30`, `0x1048` bytes) and
+entropy-checks it before use.
+
+### The secure area — do not relocate
+
+GBATEK says a secure area exists only when `arm9_rom_offset` is in
+`0x4000..0x7FFF`, which is exactly what devkitPro emits. That reads as an
+argument for relocating the ARM9 binary to `0x8000` so the console skips the
+secure area a homebrew ROM does not have.
+
+**That reasoning is wrong for this platform, and relocating breaks the cart.**
+The first flashed image used it, and the 2DS XL then refused to show the
+cartridge on the HOME menu at all — rejected before any GekkoPAK code could run.
+
+The counter-evidence is the loader already working on this hardware.
+`_picoboot.nds`, the boot ROM of the picoLoader setup previously flashed to this
+same DSpico, has:
+
+| Field | `_picoboot.nds` (works) | relocated build (rejected) |
+|---|---|---|
+| `arm9_rom_offset` | `0x4000` | `0x8000` |
+| header size (`0x84`) | `0x4000` | `0x8000` |
+| `0x4000..0x8000` | populated | all zeros |
+| device capacity (`0x14`) | `0x02` (512 KiB) | `0x01` (256 KiB), image 270 KiB |
+
+So on real 2DS XL hardware a homebrew ROM boots through DSpico with ARM9 at
+`0x4000` and the secure-area region simply carrying the start of the ARM9
+binary. Relocation additionally left the capacity field under-declaring the
+grown image, so there were two independent defects in that build.
+
+`--no-relocate` is therefore the correct mode, and the working configuration is:
+stock devkitPro layout, KEY1 table injected into header padding, nothing else
+touched. The relocation path is retained in the tool but is off by default and
+should not be used against DSpico.
+
+Why a keyless `_picoboot.nds` boots at all — whether picoLoader's build injects
+the table before embedding, or the console's DS-mode path is more permissive
+than the upstream README implies — is **not resolved**. Keys are injected
+because upstream documents them as required and doing so costs nothing; that is
+not the same as having proven they are necessary.
 
 ## Wire byte order — settled
 

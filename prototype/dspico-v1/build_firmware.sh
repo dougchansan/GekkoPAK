@@ -25,7 +25,10 @@ fi
 cd dspico-firmware
 git fetch --quiet origin "$DSPICO_REF"
 git checkout --quiet FETCH_HEAD
-git clean -qfd
+# reset --hard as well as clean: a previous run leaves the overlay applied to
+# tracked files, and apply_overlay.py anchors on the pristine upstream text.
+git reset --quiet --hard FETCH_HEAD
+git clean -qfd -e pico-sdk -e roms
 echo "dspico   : $(git rev-parse HEAD)"
 
 if [ ! -d pico-sdk/.git ]; then
