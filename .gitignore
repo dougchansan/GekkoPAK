@@ -2,6 +2,7 @@ build/
 out/
 prototype/azahar/build/
 prototype/azahar/azahar_libretro.so
+prototype/azahar-ntr/build/
 .vscode/
 .idea/
 *.user
