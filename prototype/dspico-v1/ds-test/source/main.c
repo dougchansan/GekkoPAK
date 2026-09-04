@@ -286,8 +286,39 @@ int main(void)
         (unsigned)REG_EXMEMCNT, (REG_EXMEMCNT & ARM7_OWNS_CARD) ? "NO" : "yes");
     LOG("B8 card id : %08lX\n", (unsigned long)gpk_raw_read32(0xB800000000000000ull));
     LOG("E4 sd stat : %08lX\n", (unsigned long)gpk_raw_read32(0xE400000000000000ull));
-    LOG("F2 arg0    : %08lX\n", (unsigned long)gpk_raw_read32(0xF2474B0000000000ull));
-    LOG("F2 caps    : %08lX\n", (unsigned long)gpk_raw_read32(0xF2474B0600000000ull));
+
+    // Read-latency sweep.
+    //
+    // B8 and E4 answer reliably while F2 mostly returns FFFFFFFF, and HELLO
+    // succeeds only occasionally. Those stock handlers are trivial, whereas
+    // GekkoPAK's F2 runs commandMatches() and bounds checks before
+    // ntrc_beginWrite(), so the likely cause is that LATENCY2(4) - the
+    // documented minimum - does not leave the RP2040 enough time to have the
+    // word queued. Rather than guess a bigger number, find the threshold: it
+    // is a real property of this cartridge and it bounds the achievable
+    // transaction rate, so the benchmark needs it either way.
+    static const u32 kLatencies[] = { 4, 8, 12, 16, 24, 32, 48, 63 };
+    LOG("F2 read latency sweep (of 32):\n");
+    u32 chosen = 0;
+    for (u32 i = 0; i < sizeof(kLatencies) / sizeof(kLatencies[0]); i++) {
+        gpkLatencyRead = kLatencies[i];
+        gpk_write_reg(GPK_REG_ARG0, 0xA5A5A5A5u);
+        u32 ok = 0;
+        for (u32 n = 0; n < 32; n++) {
+            if (gpk_read_reg(GPK_REG_ARG0) == 0xA5A5A5A5u)
+                ok++;
+        }
+        LOG("  lat %2lu : %2lu\n", (unsigned long)kLatencies[i], (unsigned long)ok);
+        if (ok == 32 && chosen == 0)
+            chosen = kLatencies[i];
+    }
+    // Take margin over the first fully reliable value; if none worked, keep the
+    // largest so the benchmark still reports something rather than silently
+    // measuring failed transactions.
+    gpkLatencyRead = chosen ? chosen : 63;
+    gpkLatencyWrite = gpkLatencyRead * 2 > 63 ? 63 : gpkLatencyRead * 2;
+    LOG("using lat r/w %lu/%lu\n",
+        (unsigned long)gpkLatencyRead, (unsigned long)gpkLatencyWrite);
 
     consoleSelect(&sTop);
     draw_status();
