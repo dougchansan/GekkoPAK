@@ -403,6 +403,10 @@ int main(void)
         (unsigned)REG_EXMEMCNT, (REG_EXMEMCNT & ARM7_OWNS_CARD) ? "NO" : "yes");
     LOG("B8 card id : %08lX\n", (unsigned long)gpk_raw_read32(0xB800000000000000ull));
     LOG("E4 sd stat : %08lX\n", (unsigned long)gpk_raw_read32(0xE400000000000000ull));
+    // Flush after each stage. A previous run wrote probe.txt at startup and
+    // then never reached the transcript write, so everything in between was
+    // lost. Saving as we go means a hang still leaves the record up to it.
+    write_diag_only();
 
     // Read-latency sweep.
     //
@@ -434,8 +438,10 @@ int main(void)
     // measuring failed transactions.
     gpkLatencyRead = chosen ? chosen : 63;
     gpkLatencyWrite = gpkLatencyRead * 2 > 63 ? 63 : gpkLatencyRead * 2;
-    LOG("using lat r/w %lu/%lu\n",
-        (unsigned long)gpkLatencyRead, (unsigned long)gpkLatencyWrite);
+    LOG("using lat r/w %lu/%lu (timeouts %lu)\n",
+        (unsigned long)gpkLatencyRead, (unsigned long)gpkLatencyWrite,
+        (unsigned long)gpkTimeouts);
+    write_diag_only();
 
     // EXEC settle sweep.
     //
@@ -467,7 +473,9 @@ int main(void)
     // nothing that matters.
     settle = settle ? settle * 8 : 1024;
     gpkExecSettle = settle > 4096 ? 4096 : settle;
-    LOG("using settle %lu (8x margin)\n", (unsigned long)gpkExecSettle);
+    LOG("using settle %lu (8x margin, timeouts %lu)\n",
+        (unsigned long)gpkExecSettle, (unsigned long)gpkTimeouts);
+    write_diag_only();
 
     // Step-by-step legacy probe. `legacy F0-F3 FAIL (00000000)` does not say
     // which step broke or why, and the GekkoPAK result codes are specific

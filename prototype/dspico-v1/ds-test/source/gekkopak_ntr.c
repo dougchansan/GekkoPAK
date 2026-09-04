@@ -100,18 +100,39 @@ static inline void gpk_start(u32 settings)
 static inline bool gpk_data_ready(void) { return REG_MCCNT1 & MCCNT1_DATA_READY; }
 static inline bool gpk_busy(void)       { return REG_MCCNT1 & MCCNT1_ENABLE; }
 
+// Bounded busy-wait.
+//
+// Every transfer loop here spins on MCCNT1_ENABLE clearing. If the cartridge
+// ever fails to complete a transfer that spin never ends, and the app locks up
+// with no output - which is exactly what happened: a run wrote probe.txt at
+// startup and then never reached the transcript write. A hang is far less
+// useful than a recorded timeout, so cap the wait and count it.
+u32 gpkTimeouts;
+
+static inline void gpk_wait_idle(void)
+{
+    u32 guard = 0;
+    while (gpk_busy()) {
+        if (++guard > 200000) {
+            gpkTimeouts++;
+            break;
+        }
+    }
+}
+
 void gpk_cmd_none(u8 opcode, u8 index, u32 word)
 {
     gpk_write_command(opcode, index, word);
     gpk_start(MCCNT1_DIR_READ | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_0 |
               GPK_SCRAMBLE_BITS | MCCNT1_READ_DATA_DESCRAMBLE |
               MCCNT1_LATENCY2(0) | MCCNT1_LATENCY1(0));
-    while (gpk_busy()) { }
+    gpk_wait_idle();
 }
 
 u32 gpk_cmd_read32(u8 opcode, u8 index, u32 word)
 {
     u32 value = 0;
+    u32 guard = 0;
     gpk_write_command(opcode, index, word);
     gpk_start(MCCNT1_DIR_READ | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_4 |
               GPK_SCRAMBLE_BITS | MCCNT1_READ_DATA_DESCRAMBLE |
@@ -119,6 +140,7 @@ u32 gpk_cmd_read32(u8 opcode, u8 index, u32 word)
     do {
         if (gpk_data_ready())
             value = REG_MCD1;
+        if (++guard > 200000) { gpkTimeouts++; break; }
     } while (gpk_busy());
     return value;
 }
@@ -127,6 +149,7 @@ void gpk_cmd_read_block(u8 opcode, u8 index, u32 word, void *dst)
 {
     u32 *out = (u32 *)dst;
     u32 *end = out + (GPK_BLOCK_BYTES / 4);
+    u32 guard = 0;
     gpk_write_command(opcode, index, word);
     gpk_start(MCCNT1_DIR_READ | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_512 |
               GPK_SCRAMBLE_BITS |
@@ -137,6 +160,7 @@ void gpk_cmd_read_block(u8 opcode, u8 index, u32 word, void *dst)
             if (out < end)
                 *out++ = w;
         }
+        if (++guard > 400000) { gpkTimeouts++; break; }
     } while (gpk_busy());
 }
 
@@ -145,6 +169,7 @@ void gpk_cmd_write_block(u8 opcode, u8 index, u32 word, const void *src)
     const u32 *in = (const u32 *)src;
     const u32 *end = in + (GPK_BLOCK_BYTES / 4);
     u32 data = 0;
+    u32 guard = 0;
     gpk_write_command(opcode, index, word);
     gpk_start(MCCNT1_DIR_WRITE | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_512 |
               GPK_SCRAMBLE_BITS | MCCNT1_READ_DATA_DESCRAMBLE |
@@ -155,6 +180,7 @@ void gpk_cmd_write_block(u8 opcode, u8 index, u32 word, const void *src)
                 data = *in++;
             REG_MCD1 = data;
         }
+        if (++guard > 400000) { gpkTimeouts++; break; }
     } while (gpk_busy());
 }
 
@@ -189,6 +215,7 @@ void gpk_exec(u8 command)
 u32 gpk_raw_read32(u64 command)
 {
     u32 value = 0;
+    u32 guard = 0;
     *(vu64 *)&REG_MCCMD0 = __builtin_bswap64(command);
     gpk_start(MCCNT1_DIR_READ | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_4 |
               GPK_SCRAMBLE_BITS | MCCNT1_READ_DATA_DESCRAMBLE |
@@ -196,6 +223,7 @@ u32 gpk_raw_read32(u64 command)
     do {
         if (gpk_data_ready())
             value = REG_MCD1;
+        if (++guard > 200000) { gpkTimeouts++; break; }
     } while (gpk_busy());
     return value;
 }

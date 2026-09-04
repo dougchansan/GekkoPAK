@@ -156,6 +156,8 @@ static inline u32  gpk_read_reg(u8 index)             { return gpk_cmd_read32(GP
 // store and always keeps up, which is why the register sweep passes while
 // HELLO, ALLOC and UPLOAD (all EXEC commands) fail.
 extern u32 gpkExecSettle;
+// Count of bus transfers that never completed; nonzero means a real bus fault.
+extern u32 gpkTimeouts;
 void gpk_exec(u8 command);
 static inline u32  gpk_event_depth(void)              { return gpk_read_reg(GPK_REG_EVENT_DEPTH); }
 
