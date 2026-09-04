@@ -28,7 +28,7 @@ static const char *layer_name(int layer)
     switch (layer) {
     case GPK_LAYER_NONE:       return "ok";
     case GPK_LAYER_CARD_OWNER: return "slot-1 owner (EXMEMCNT)";
-    case GPK_LAYER_UNSCRAMBLE: return "FC unscramble transition";
+    case GPK_LAYER_UNSCRAMBLE: return "cartridge not in unscrambled game mode";
     case GPK_LAYER_HELLO:      return "F1/F2 HELLO no answer";
     case GPK_LAYER_PROTOCOL:   return "protocol mismatch";
     default:                   return "unknown";
@@ -241,11 +241,15 @@ int main(void)
     powerOn(POWER_ALL_2D);
     dbg_stage(RGB15(31, 0, 0));   // red: main() entered
 
+    // The marker owns VRAM_A as an LCD framebuffer, so it must be the last
+    // thing to touch the main engine before the background setup below. An
+    // earlier version painted a second marker *after* vramSetBankA(), which
+    // silently put VRAM_A back into LCD mode and left the top screen stuck on
+    // the marker colour while the sub-screen console worked fine.
     videoSetMode(MODE_0_2D);
     videoSetModeSub(MODE_0_2D);
     vramSetBankA(VRAM_A_MAIN_BG);
     vramSetBankC(VRAM_C_SUB_BG);
-    dbg_stage(RGB15(31, 31, 0));  // yellow: video configured
 
     consoleInit(&sTop, 3, BgType_Text4bpp, BgSize_T_256x256, 31, 0, true, true);
     consoleInit(&sBottom, 3, BgType_Text4bpp, BgSize_T_256x256, 31, 0, false, true);

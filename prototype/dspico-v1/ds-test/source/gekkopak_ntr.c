@@ -1,19 +1,56 @@
 #include "gekkopak_ntr.h"
 #include <string.h>
 
-// The gamecard 4-byte data port. card.h only declares the read direction;
-// console->cart transfers use the same address with CARD_WR set in ROMCTRL.
-#define GPK_CARD_DATA (*(vu32 *)0x04100010)
+// Card bus registers, named as in the DSpico DLDI driver (LNH-team/dspico-dldi
+// source/card.h) rather than libnds, because that driver is the reference
+// implementation for talking to this cartridge and matching it exactly removes
+// a whole class of guesswork.
+#define REG_MCCNT0 (*(vu16 *)0x040001A0)
+#define REG_MCCNT1 (*(vu32 *)0x040001A4)
+#define REG_MCCMD0 (*(vu32 *)0x040001A8)
+#define REG_MCD1   (*(vu32 *)0x04100010)
 
-// docs/commands.md: >=4 latency cycles for cart->console, >=8 for console->cart.
-// Kept generous by default; the benchmark reports the values actually used.
-u32 gpkLatencyRead = 8;
-u32 gpkLatencyWrite = 16;
+#define MCCNT0_MODE_MASK    (1 << 13)
+#define MCCNT0_MODE_ROM     (0 << 13)
+#define MCCNT0_ENABLE       (1 << 15)
 
-// KEY2 command scrambling is still active in game mode when the cartridge was
-// brought up by the console's own boot path. gpk_transport_init() determines
-// empirically whether the FC transition needs it, and records the answer here.
-static u32 sSecCmdFlag = 0;
+#define MCCNT1_LATENCY1(x)           (x)
+#define MCCNT1_READ_DATA_DESCRAMBLE  (1 << 13)
+#define MCCNT1_CLOCK_SCRAMBLER       (1 << 14)
+#define MCCNT1_LATENCY2(x)           (((x) << 16) & 0x3F0000)
+#define MCCNT1_CMD_SCRAMBLE          (1 << 22)
+#define MCCNT1_DATA_READY            (1 << 23)
+#define MCCNT1_LEN_0                 (0 << 24)
+#define MCCNT1_LEN_512               (1 << 24)
+#define MCCNT1_LEN_4                 (7 << 24)
+#define MCCNT1_CLK_6_7_MHZ           (0 << 27)
+#define MCCNT1_RESET_OFF             (1 << 29)
+#define MCCNT1_DIR_READ              (0u << 30)
+#define MCCNT1_DIR_WRITE             (1u << 30)
+#define MCCNT1_ENABLE                (1u << 31)
+
+// Latency, in card clocks, inserted before the data phase. docs/commands.md
+// asks for >=4 on cart->console and >=8 on console->cart, and the DLDI driver
+// uses exactly those in LATENCY2 with LATENCY1 left at zero. Reported with
+// every benchmark so a measurement is reproducible.
+u32 gpkLatencyRead = 4;
+u32 gpkLatencyWrite = 8;
+
+// KEY2 command scrambling stays ENABLED for every transaction.
+//
+// This is the detail that made a first attempt fail with "HELLO no answer".
+// docs/commands.md says to zero the scrambler seeds so the scrambler emits
+// zeros, and every DSpico DLDI transfer then still sets CMD_SCRAMBLE and
+// CLOCK_SCRAMBLER. The console and the cartridge each advance a scrambler ring
+// per command, so the two only stay in step if the DS keeps clocking its ring.
+// Clearing these bits mid-session desynchronises the link and every subsequent
+// command decodes to garbage.
+//
+// There is also no FC (DISABLE_SCRAMBLING) transition here. By the time this
+// runs, Pico Loader has already put the cartridge into unscrambled game mode -
+// which is why the DLDI driver issues its E3/E4/E5 commands directly and never
+// sends FC either.
+#define GPK_SCRAMBLE_BITS (MCCNT1_CMD_SCRAMBLE | MCCNT1_CLOCK_SCRAMBLER)
 
 void gpk_timer_init(void)
 {
@@ -38,45 +75,51 @@ u32 gpk_ticks(void)
     return (hi << 16) | lo;
 }
 
-// Assemble the 8-byte command MSB-first. This is the one place where GekkoPAK
-// owns the bus byte order; nothing below this line depends on it.
+// Assemble the 8-byte command. GekkoPAK owns this serialization and nothing
+// below it depends on the ordering.
+//
+// The command is written as a big-endian u64 and byte-swapped into the
+// register pair, so command byte 0 (the opcode) goes out first - matching
+// card_romSetCmd() in the DLDI driver and DSpico's `cmd0 >> 24` dispatch.
 static inline void gpk_write_command(u8 opcode, u8 index, u32 word)
 {
-    REG_CARD_COMMAND[0] = opcode;
-    REG_CARD_COMMAND[1] = 0x47; // 'G'
-    REG_CARD_COMMAND[2] = 0x4B; // 'K'
-    REG_CARD_COMMAND[3] = index;
-    REG_CARD_COMMAND[4] = (u8)(word >> 24);
-    REG_CARD_COMMAND[5] = (u8)(word >> 16);
-    REG_CARD_COMMAND[6] = (u8)(word >> 8);
-    REG_CARD_COMMAND[7] = (u8)word;
+    u64 cmd = ((u64)opcode << 56) |
+              ((u64)0x47   << 48) | // 'G'
+              ((u64)0x4B   << 40) | // 'K'
+              ((u64)index  << 32) |
+              (u64)word;
+    *(vu64 *)&REG_MCCMD0 = __builtin_bswap64(cmd);
 }
 
-static inline void gpk_begin(u32 romctrl)
+static inline void gpk_start(u32 settings)
 {
-    REG_AUXSPICNT = CARD_ENABLE;
-    REG_ROMCTRL = romctrl | CARD_ACTIVATE | CARD_nRESET;
+    REG_MCCNT0 = (REG_MCCNT0 & ~MCCNT0_MODE_MASK) | MCCNT0_MODE_ROM | MCCNT0_ENABLE;
+    REG_MCCNT1 = MCCNT1_ENABLE | settings;
 }
+
+static inline bool gpk_data_ready(void) { return REG_MCCNT1 & MCCNT1_DATA_READY; }
+static inline bool gpk_busy(void)       { return REG_MCCNT1 & MCCNT1_ENABLE; }
 
 void gpk_cmd_none(u8 opcode, u8 index, u32 word)
 {
     gpk_write_command(opcode, index, word);
-    gpk_begin(sSecCmdFlag | CARD_DELAY1(gpkLatencyRead) | CARD_BLK_SIZE(0));
-    while (REG_ROMCTRL & CARD_BUSY) {
-        // No data phase; the block-size-0 transfer still clocks the command out.
-    }
+    gpk_start(MCCNT1_DIR_READ | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_0 |
+              GPK_SCRAMBLE_BITS | MCCNT1_READ_DATA_DESCRAMBLE |
+              MCCNT1_LATENCY2(0) | MCCNT1_LATENCY1(0));
+    while (gpk_busy()) { }
 }
 
 u32 gpk_cmd_read32(u8 opcode, u8 index, u32 word)
 {
     u32 value = 0;
     gpk_write_command(opcode, index, word);
-    // BLK_SIZE(7) is the 4-byte transfer encoding.
-    gpk_begin(sSecCmdFlag | CARD_DELAY1(gpkLatencyRead) | CARD_BLK_SIZE(7));
+    gpk_start(MCCNT1_DIR_READ | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_4 |
+              GPK_SCRAMBLE_BITS | MCCNT1_READ_DATA_DESCRAMBLE |
+              MCCNT1_LATENCY2(gpkLatencyRead) | MCCNT1_LATENCY1(0));
     do {
-        if (REG_ROMCTRL & CARD_DATA_READY)
-            value = GPK_CARD_DATA;
-    } while (REG_ROMCTRL & CARD_BUSY);
+        if (gpk_data_ready())
+            value = REG_MCD1;
+    } while (gpk_busy());
     return value;
 }
 
@@ -85,29 +128,34 @@ void gpk_cmd_read_block(u8 opcode, u8 index, u32 word, void *dst)
     u32 *out = (u32 *)dst;
     u32 *end = out + (GPK_BLOCK_BYTES / 4);
     gpk_write_command(opcode, index, word);
-    // BLK_SIZE(1) == 0x100 << 1 == 512 bytes.
-    gpk_begin(sSecCmdFlag | CARD_DELAY1(gpkLatencyRead) | CARD_BLK_SIZE(1));
+    gpk_start(MCCNT1_DIR_READ | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_512 |
+              GPK_SCRAMBLE_BITS |
+              MCCNT1_LATENCY2(gpkLatencyRead) | MCCNT1_LATENCY1(0));
     do {
-        if (REG_ROMCTRL & CARD_DATA_READY) {
-            u32 w = GPK_CARD_DATA;
+        if (gpk_data_ready()) {
+            u32 w = REG_MCD1;
             if (out < end)
                 *out++ = w;
         }
-    } while (REG_ROMCTRL & CARD_BUSY);
+    } while (gpk_busy());
 }
 
 void gpk_cmd_write_block(u8 opcode, u8 index, u32 word, const void *src)
 {
     const u32 *in = (const u32 *)src;
     const u32 *end = in + (GPK_BLOCK_BYTES / 4);
+    u32 data = 0;
     gpk_write_command(opcode, index, word);
-    gpk_begin(sSecCmdFlag | CARD_WR | CARD_DELAY1(gpkLatencyWrite) | CARD_BLK_SIZE(1));
+    gpk_start(MCCNT1_DIR_WRITE | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_512 |
+              GPK_SCRAMBLE_BITS | MCCNT1_READ_DATA_DESCRAMBLE |
+              MCCNT1_LATENCY2(gpkLatencyWrite) | MCCNT1_LATENCY1(0));
     do {
-        if (REG_ROMCTRL & CARD_DATA_READY) {
-            u32 w = (in < end) ? *in++ : 0;
-            GPK_CARD_DATA = w;
+        if (gpk_data_ready()) {
+            if (in < end)
+                data = *in++;
+            REG_MCD1 = data;
         }
-    } while (REG_ROMCTRL & CARD_BUSY);
+    } while (gpk_busy());
 }
 
 u32 gpk_hello(u32 *protocol, u32 *caps, u32 *localBytes, u32 *transport)
@@ -132,27 +180,6 @@ u32 gpk_alloc(u32 bytes, u32 *sizeOut)
     return gpk_read_reg(GPK_REG_OUT0);
 }
 
-// Try the FC (DISABLE_SCRAMBLING) transition and confirm it took effect by
-// reading back the protocol version. Returns true when GekkoPAK answers.
-static bool gpk_try_unscramble(u32 secCmdFlag)
-{
-    sSecCmdFlag = secCmdFlag;
-    // FC is a game-mode command with no payload; DSpico switches to
-    // unscrambled game mode when it sees the second command word.
-    REG_CARD_COMMAND[0] = 0xFC;
-    for (int i = 1; i < 8; i++)
-        REG_CARD_COMMAND[i] = 0;
-    gpk_begin(secCmdFlag | CARD_DELAY1(gpkLatencyRead) | CARD_BLK_SIZE(0));
-    while (REG_ROMCTRL & CARD_BUSY) { }
-
-    // From here on the link must be unscrambled on both sides.
-    sSecCmdFlag = 0;
-    u32 protocol = 0;
-    if (gpk_hello(&protocol, NULL, NULL, NULL) != GPK_OK)
-        return false;
-    return protocol == GPK_PROTOCOL_V1;
-}
-
 int gpk_transport_init(void)
 {
     // Claim slot-1 for the ARM9 by hand rather than via ntrcardOpen(): the
@@ -164,19 +191,10 @@ int gpk_transport_init(void)
 
     gpk_timer_init();
 
-    // The console's boot path may or may not have left KEY2 command scrambling
-    // enabled. Try the scrambled transition first, then the plain one.
-    if (gpk_try_unscramble(CARD_SEC_CMD))
-        return GPK_LAYER_NONE;
-    if (gpk_try_unscramble(0))
-        return GPK_LAYER_NONE;
-
-    // Distinguish "no answer at all" from "answered with the wrong protocol".
-    sSecCmdFlag = 0;
     u32 protocol = 0;
     if (gpk_hello(&protocol, NULL, NULL, NULL) != GPK_OK)
         return GPK_LAYER_HELLO;
     if (protocol != GPK_PROTOCOL_V1)
         return GPK_LAYER_PROTOCOL;
-    return GPK_LAYER_UNSCRAMBLE;
+    return GPK_LAYER_NONE;
 }
