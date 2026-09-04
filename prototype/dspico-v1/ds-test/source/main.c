@@ -343,8 +343,28 @@ int main(void)
         if (ok == 16 && settle == 0 && kSettles[i] != 0)
             settle = kSettles[i];
     }
-    gpkExecSettle = settle ? settle : 1024;
-    LOG("using settle %lu\n", (unsigned long)gpkExecSettle);
+    // HELLO is the cheapest EXEC there is - executeHighCommand() just assigns
+    // four values. ALLOC scans the allocation table and UPLOAD does a copy plus
+    // FNV-1a, so the minimum that satisfies HELLO is too tight for them. Take a
+    // wide margin; EXEC is not on the timed benchmark path, so this costs
+    // nothing that matters.
+    settle = settle ? settle * 8 : 1024;
+    gpkExecSettle = settle > 4096 ? 4096 : settle;
+    LOG("using settle %lu (8x margin)\n", (unsigned long)gpkExecSettle);
+
+    // Step-by-step legacy probe. `legacy F0-F3 FAIL (00000000)` does not say
+    // which step broke or why, and the GekkoPAK result codes are specific
+    // (2=BadHandle 3=NoMemory 4=NotReady 5=BadDescriptor 7=QueueFull), so print
+    // them rather than infer.
+    LOG("--- legacy probe ---\n");
+    gpk_write_reg(GPK_REG_ARG0, 0xDEADBEEFu);
+    LOG("reg rt     : %08lX\n", (unsigned long)gpk_read_reg(GPK_REG_ARG0));
+    gpk_write_reg(GPK_REG_ARG0, 16);
+    gpk_exec(GPK_CMD_ALLOC);
+    LOG("alloc res  : %lu handle %lu size %lu\n",
+        (unsigned long)gpk_read_reg(GPK_REG_RESULT),
+        (unsigned long)gpk_read_reg(GPK_REG_OUT0),
+        (unsigned long)gpk_read_reg(GPK_REG_OUT1));
 
     consoleSelect(&sTop);
     draw_status();
