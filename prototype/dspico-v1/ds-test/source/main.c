@@ -7,8 +7,10 @@
 
 #include <nds.h>
 #include <fat.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "bench.h"
 
@@ -19,7 +21,33 @@ static bool sHaveReport;
 static bool sFullRun;
 static bool sFatReady;
 
-#define LOG(...) do { consoleSelect(&sBottom); iprintf(__VA_ARGS__); consoleSelect(&sTop); } while (0)
+// Every log line is mirrored into sDiag so the full diagnostic transcript can
+// be written to the SD card. Reading numbers off a photograph of a DS screen is
+// slow and error-prone, and the transcript is the primary artefact of a run.
+static char sDiag[8192];
+static u32  sDiagLen;
+
+static void gpk_log(const char *fmt, ...)
+{
+    char line[192];
+    va_list ap;
+    va_start(ap, fmt);
+    vsniprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+
+    consoleSelect(&sBottom);
+    iprintf("%s", line);
+    consoleSelect(&sTop);
+
+    u32 n = strlen(line);
+    if (sDiagLen + n + 1 < sizeof(sDiag)) {
+        memcpy(sDiag + sDiagLen, line, n);
+        sDiagLen += n;
+        sDiag[sDiagLen] = 0;
+    }
+}
+
+#define LOG(...) gpk_log(__VA_ARGS__)
 
 static const char *pf(bool ok) { return ok ? "PASS" : "FAIL"; }
 
