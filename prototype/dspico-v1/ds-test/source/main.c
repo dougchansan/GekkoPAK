@@ -221,13 +221,34 @@ static void write_diag_only(void)
         LOG("SD not writable; no diag\n");
         return;
     }
-    gpk_join(path, sizeof(path), "gekkopak/results/diag.txt");
+    // Write to probe.txt, and read it back afterwards.
+    //
+    // This is empirical rather than principled. probe.txt is the only file that
+    // has ever survived to the card: it is written in gpk_find_prefix as
+    // fopen(w) / write / fclose / fopen(r) / read / fclose, and it persists on
+    // every run. Files written the same way minus the readback - diag.txt,
+    // latest.txt, latest.csv - are lost every time, even though fopen, fwrite
+    // and fclose all report success. Three explanations for that have already
+    // been wrong (unflushed cache, path prefix, an E4 desync), so stop
+    // theorising about libfat and copy the sequence that demonstrably works.
+    gpk_join(path, sizeof(path), "gekkopak/results/probe.txt");
     FILE *d = fopen(path, "w");
     if (d) {
         fwrite(sDiag, 1, sDiagLen, d);
         fclose(d);
     }
-    LOG("diag %s\n", d ? "saved" : "FAILED");
+
+    u32 back = 0;
+    FILE *v = fopen(path, "r");
+    if (v) {
+        char buf[64];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), v)) > 0)
+            back += n;
+        fclose(v);
+    }
+    LOG("diag %s %lu/%lu\n", d ? "w" : "FAIL",
+        (unsigned long)back, (unsigned long)sDiagLen);
 }
 
 static void write_report_files(void)
