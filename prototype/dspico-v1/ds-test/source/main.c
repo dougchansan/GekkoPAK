@@ -402,10 +402,19 @@ int main(void)
     LOG("EXMEMCNT   : %04X (arm9 owns card: %s)\n",
         (unsigned)REG_EXMEMCNT, (REG_EXMEMCNT & ARM7_OWNS_CARD) ? "NO" : "yes");
     LOG("B8 card id : %08lX\n", (unsigned long)gpk_raw_read32(0xB800000000000000ull));
-    LOG("E4 sd stat : %08lX\n", (unsigned long)gpk_raw_read32(0xE400000000000000ull));
-    // Flush after each stage. A previous run wrote probe.txt at startup and
-    // then never reached the transcript write, so everything in between was
-    // lost. Saving as we go means a hang still leaves the record up to it.
+    // E4 (GET_SD_STAT) is deliberately NOT issued any more.
+    //
+    // It answered 00000001 on hardware and served its purpose - it proved the
+    // cartridge was in unscrambled game mode and that DSpico's extended command
+    // dispatch reached us. But it polls the same SD state machine the DLDI
+    // driver drives, whose read sequence is E3 -> poll E4 -> E5. A stray E4
+    // consumes a state transition and desynchronises it, after which libfat
+    // writes report success and never reach the card.
+    //
+    // That matches the evidence exactly: probe.txt, written before any raw card
+    // traffic, persists every run, while every file written afterwards is lost
+    // despite fopen/fwrite/fclose all succeeding. It is very likely also what
+    // destroyed a directory earlier - a write landing somewhere it should not.
     write_diag_only();
 
     // Read-latency sweep.
