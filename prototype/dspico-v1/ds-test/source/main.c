@@ -27,6 +27,9 @@ static bool sFatReady;
 static char sDiag[8192];
 static u32  sDiagLen;
 
+// Probe values, kept for the one-page summary.
+static u32 sProbeB8, sProbeAllocRes, sProbeHandle, sProbeSize, sProbeUpSum;
+
 static void gpk_log(const char *fmt, ...)
 {
     char line[192];
@@ -76,55 +79,75 @@ static void draw_status(void)
 {
     consoleSelect(&sTop);
     consoleClear();
-    iprintf("GEKKOPAK PHYSICAL TEST\n\n");
+    const gpk_report_t *r = &sReport;
+    char buf[32];
+
+    // One page, everything on it. SD export never worked reliably - only the
+    // first write of a run ever reached the card - so a single photograph of
+    // this screen is the collection method. Keep it dense and complete.
+    iprintf("GEKKOPAK PHYS TEST DSpico\n");
+    iprintf("B8 %08lX to %lu\n",
+            (unsigned long)sProbeB8, (unsigned long)gpkTimeouts);
+    iprintf("lat %lu/%lu settle %lu\n",
+            (unsigned long)gpkLatencyRead, (unsigned long)gpkLatencyWrite,
+            (unsigned long)gpkExecSettle);
 
     if (!sHaveReport) {
-        iprintf("Press A  quick test\n");
-        iprintf("Press X  full benchmark\n");
+        iprintf("\nrunning...\n");
         return;
     }
-
-    const gpk_report_t *r = &sReport;
-    iprintf("DSpico RP2040\n");
     if (!r->device_present) {
-        iprintf("Device detected  NO\n\n");
-        iprintf("Failing layer:\n  %s\n\n", layer_name(r->init_layer));
-        iprintf("Overall         FAIL\n");
+        iprintf("\nDEVICE NOT DETECTED\n%s\n", layer_name(r->init_layer));
         return;
     }
 
-    iprintf("Device detected  YES\n");
-    iprintf("Protocol        %lu.%lu\n",
-            (unsigned long)(r->protocol >> 16), (unsigned long)(r->protocol & 0xFFFF));
-    iprintf("Caps            %08lX\n", (unsigned long)r->caps);
-    iprintf("Local RAM       %lu KiB\n", (unsigned long)(r->local_bytes / 1024));
-    iprintf("F4/F5 support   %s\n", (r->caps & GPK_CAP_BLOCK_XPORT) ? "YES" : "NO");
-    iprintf("F4/F5           %s\n", pf(r->f4_ok && r->f5_ok));
-    iprintf("Checksum        %s\n", pf(r->checksum_ok));
+    iprintf("proto %lu.%lu caps %08lX\n",
+            (unsigned long)(r->protocol >> 16), (unsigned long)(r->protocol & 0xFFFF),
+            (unsigned long)r->caps);
+    iprintf("RAM %luK F4F5 %s\n",
+            (unsigned long)(r->local_bytes / 1024),
+            (r->caps & GPK_CAP_BLOCK_XPORT) ? "y" : "n");
+    iprintf("alloc r%lu h%lu s%lu\n",
+            (unsigned long)sProbeAllocRes, (unsigned long)sProbeHandle,
+            (unsigned long)sProbeSize);
+    iprintf("upsum %08lX\n", (unsigned long)sProbeUpSum);
+    iprintf("legacy %s ck %08lX\n",
+            pf(r->legacy_ok), (unsigned long)r->checksum);
+    iprintf("F4 %s F5 %s ck %s\n",
+            pf(r->f4_ok), pf(r->f5_ok), pf(r->checksum_ok));
 
     if (!sFullRun) {
-        iprintf("\nchecksum  %08lX\n", (unsigned long)r->checksum);
-        iprintf("\nOverall         %s\n", pf(r->overall_ok));
+        iprintf("\nOVERALL %s\n", pf(r->overall_ok));
         return;
     }
 
-    char buf[32];
+    iprintf("cmd %lu/%lu/%lu us\n",
+            (unsigned long)r->cmd_latency.min_us,
+            (unsigned long)r->cmd_latency.median_us,
+            (unsigned long)r->cmd_latency.p95_us);
+    iprintf("F4  %lu/%lu/%lu us\n",
+            (unsigned long)r->f4_latency.min_us,
+            (unsigned long)r->f4_latency.median_us,
+            (unsigned long)r->f4_latency.p95_us);
+    iprintf("F5  %lu/%lu/%lu us\n",
+            (unsigned long)r->f5_latency.min_us,
+            (unsigned long)r->f5_latency.median_us,
+            (unsigned long)r->f5_latency.p95_us);
+    iprintf("RTT %lu/%lu/%lu us\n",
+            (unsigned long)r->rtt_512.min_us,
+            (unsigned long)r->rtt_512.median_us,
+            (unsigned long)r->rtt_512.p95_us);
     fmt_mib(r->write_kib_per_s, buf, sizeof(buf));
-    iprintf("\nWrite BW        %s\n", buf);
+    iprintf("wBW %s\n", buf);
     fmt_mib(r->read_kib_per_s, buf, sizeof(buf));
-    iprintf("Read BW         %s\n", buf);
-    iprintf("\nCmd latency     %lu us\n", (unsigned long)r->cmd_latency.median_us);
-    iprintf("512B RTT        %lu us\n\n", (unsigned long)r->rtt_512.median_us);
-
-    for (u32 i = 0; i < r->batch_count; i++) {
-        const gpk_batch_result_t *b = &r->batches[i];
-        iprintf("Batch %lu         %lu.%03lu us/job%s\n",
-                (unsigned long)b->batch,
-                (unsigned long)(b->us_per_job_x1000 / 1000),
-                (unsigned long)(b->us_per_job_x1000 % 1000),
-                b->ok ? "" : " !");
-    }
-    iprintf("\nOverall         %s\n", pf(r->overall_ok));
+    iprintf("rBW %s\n", buf);
+    for (u32 i = 0; i < r->batch_count; i++)
+        iprintf("b%lu %lu.%03lu us %s\n",
+                (unsigned long)r->batches[i].batch,
+                (unsigned long)(r->batches[i].us_per_job_x1000 / 1000),
+                (unsigned long)(r->batches[i].us_per_job_x1000 % 1000),
+                r->batches[i].ok ? "ok" : "!!");
+    iprintf("OVERALL %s\n", pf(r->overall_ok));
 }
 
 static void log_details(void)
@@ -166,6 +189,7 @@ static void log_details(void)
 // when the default device happens to be set. Rather than assume, find a prefix
 // a file can actually be created and read back through. Empty until verified.
 static char sPrefix[8];
+
 
 static bool gpk_join(char *out, size_t n, const char *tail)
 {
@@ -436,7 +460,6 @@ int main(void)
     // traffic, persists every run, while every file written afterwards is lost
     // despite fopen/fwrite/fclose all succeeding. It is very likely also what
     // destroyed a directory earlier - a write landing somewhere it should not.
-    write_diag_only();
 
     // Read-latency sweep.
     //
@@ -471,7 +494,6 @@ int main(void)
     LOG("using lat r/w %lu/%lu (timeouts %lu)\n",
         (unsigned long)gpkLatencyRead, (unsigned long)gpkLatencyWrite,
         (unsigned long)gpkTimeouts);
-    write_diag_only();
 
     // EXEC settle sweep.
     //
@@ -505,7 +527,6 @@ int main(void)
     gpkExecSettle = settle > 4096 ? 4096 : settle;
     LOG("using settle %lu (8x margin, timeouts %lu)\n",
         (unsigned long)gpkExecSettle, (unsigned long)gpkTimeouts);
-    write_diag_only();
 
     // Step-by-step legacy probe. `legacy F0-F3 FAIL (00000000)` does not say
     // which step broke or why, and the GekkoPAK result codes are specific
@@ -524,6 +545,7 @@ int main(void)
     u32 pres = gpk_read_reg(GPK_REG_RESULT);
     u32 phandle = gpk_read_reg(GPK_REG_OUT0);
     u32 psize = gpk_read_reg(GPK_REG_OUT1);
+    sProbeAllocRes = pres; sProbeHandle = phandle; sProbeSize = psize;
     LOG("alloc res %08lX h %08lX sz %lu\n",
         (unsigned long)pres, (unsigned long)phandle, (unsigned long)psize);
 
@@ -543,10 +565,14 @@ int main(void)
     // latency sweep, settle sweep and legacy probe all run unattended and are
     // the diagnostic data that matters right now, so they must not depend on
     // anyone pressing a key afterwards.
-    write_diag_only();
 
     consoleSelect(&sTop);
     draw_status();
+
+    // Run the full benchmark automatically. Collection is now a single
+    // photograph of the summary page, so requiring a keypress only adds a
+    // round trip.
+    run(true);
 
     bool marked = false;
     while (pmMainLoop()) {
