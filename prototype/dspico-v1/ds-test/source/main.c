@@ -269,6 +269,26 @@ int main(void)
     sFatReady = false;
     iprintf("SD: deferred (press SELECT)\n");
 
+    // Bus probe, before any GekkoPAK traffic.
+    //
+    // Each line isolates one layer, so a failure points at a specific thing
+    // rather than at "the hardware":
+    //   B8 card id  - stock game-mode command. A sane value means the ROMCTRL
+    //                 setup, slot-1 ownership and command serialization work.
+    //   E4 sd stat  - a DSpico extension valid only in unscrambled game mode.
+    //                 Answering proves we are in that mode and that DSpico's
+    //                 extended dispatch reaches us.
+    //   F2 arg0     - GekkoPAK. If B8 and E4 answer but this does not, the
+    //                 fault is in the overlay's F0-F5 handlers, not the bus.
+    REG_EXMEMCNT &= ~ARM7_OWNS_CARD;
+    LOG("--- bus probe ---\n");
+    LOG("EXMEMCNT   : %04X (arm9 owns card: %s)\n",
+        (unsigned)REG_EXMEMCNT, (REG_EXMEMCNT & ARM7_OWNS_CARD) ? "NO" : "yes");
+    LOG("B8 card id : %08lX\n", (unsigned long)gpk_raw_read32(0xB800000000000000ull));
+    LOG("E4 sd stat : %08lX\n", (unsigned long)gpk_raw_read32(0xE400000000000000ull));
+    LOG("F2 arg0    : %08lX\n", (unsigned long)gpk_raw_read32(0xF2474B0000000000ull));
+    LOG("F2 caps    : %08lX\n", (unsigned long)gpk_raw_read32(0xF2474B0600000000ull));
+
     consoleSelect(&sTop);
     draw_status();
 

@@ -163,6 +163,12 @@ static inline void gpk_read_block(void *block, u32 meaningfulBytes) {
     gpk_cmd_read_block(GPK_OP_READ_BLOCK, 1, (meaningfulBytes << 16), block);
 }
 
+// Raw 8-byte command with a 4-byte read phase, using the same bus settings as
+// every other transaction. Exists so the test can issue DSpico's own commands
+// (B8 read-id, E4 sd-status) and tell "the bus is wrong" apart from "the
+// GekkoPAK handlers are not answering".
+u32 gpk_raw_read32(u64 command);
+
 // Convenience wrappers around the F0/F1/F2 legacy path.
 u32 gpk_alloc(u32 bytes, u32 *sizeOut);
 u32 gpk_hello(u32 *protocol, u32 *caps, u32 *localBytes, u32 *transport);

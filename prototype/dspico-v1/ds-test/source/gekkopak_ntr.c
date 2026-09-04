@@ -158,6 +158,20 @@ void gpk_cmd_write_block(u8 opcode, u8 index, u32 word, const void *src)
     } while (gpk_busy());
 }
 
+u32 gpk_raw_read32(u64 command)
+{
+    u32 value = 0;
+    *(vu64 *)&REG_MCCMD0 = __builtin_bswap64(command);
+    gpk_start(MCCNT1_DIR_READ | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_4 |
+              GPK_SCRAMBLE_BITS | MCCNT1_READ_DATA_DESCRAMBLE |
+              MCCNT1_LATENCY2(gpkLatencyRead) | MCCNT1_LATENCY1(0));
+    do {
+        if (gpk_data_ready())
+            value = REG_MCD1;
+    } while (gpk_busy());
+    return value;
+}
+
 u32 gpk_hello(u32 *protocol, u32 *caps, u32 *localBytes, u32 *transport)
 {
     gpk_exec(GPK_CMD_HELLO);
