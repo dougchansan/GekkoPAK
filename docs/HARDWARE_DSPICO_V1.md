@@ -24,13 +24,69 @@ says so explicitly.
 | GekkoPAK overlay applied and verified | PASS |
 | DSpico firmware built (RelWithDebInfo, real ROM) | PASS |
 | `gekkopak_test.nds` built | PASS |
-| UF2 validated and flashed to confirmed DSpico | PASS |
-| DSpico rebooted after flash | PASS — left BOOTSEL and held (see below) |
-| Test package staged on DSpico SD | PASS |
-| Physical 2DS XL run (build 1) | **FAIL** — cart not detected by HOME menu; ROM relocation defect |
-| Corrected firmware built (no relocation) | PASS |
-| Corrected firmware flashed | PASS — identity verified, reset at t+0.3 s |
-| Physical 2DS XL run (build 2) | **PENDING** — cartridge going into the console |
+| Cartridge boot ROM prepared (DSRomEncryptor pipeline) | PASS |
+| Firmware flashed to confirmed DSpico | PASS |
+| Cartridge detected by New 2DS XL | PASS |
+| Pico Loader menu boots with GekkoPAK overlay present | PASS |
+| GekkoPAK transport exercised on hardware | **PENDING** |
+
+Two results are already worth recording. The GekkoPAK overlay does **not** break
+DSpico's card emulation - a firmware carrying it boots the cartridge normally,
+which had been an open hypothesis while nothing would boot at all. And the
+device is back on its original picoLoader setup rather than a replacement boot
+ROM, so iterating on the test application is now a file copy to the SD card
+instead of a BOOTSEL cycle and a reflash.
+
+### Getting a homebrew ROM to boot: what actually works
+
+Five builds tried to make `gekkopak_test.nds` itself the cartridge boot ROM by
+editing its header. That approach is a dead end and the record is kept here so
+it is not repeated:
+
+| Attempt | Change | Result |
+|---|---|---|
+| 1 | ARM9 relocated to 0x8000, raw key table injected | not detected |
+| 2 | no relocation, raw key table injected | not detected |
+| 3 | + NTR-only unit code, header CRC fixed by hand | not detected |
+| 4 | + DSRomEncryptor (secure area encrypted) | detected, booted, white screen |
+| 5 | build 4 plus app-side diagnostics only | not detected |
+
+Build 5 was structurally identical to build 4 through the same pipeline - same
+unit code, same ARM9 offset, encrypted secure area, both CRCs valid - and
+differed only inside the ARM9 payload, which the console does not inspect during
+detection. No structural explanation for the difference was found.
+
+The supported path avoids all of it. `prototype/dspico-v1/build_bootloader.sh`
+builds the official DSpico Bootloader with BlocksDS, DLDI-patches it, runs it
+through DSRomEncryptor and embeds it as `roms/default.nds`. The cartridge then
+boots Pico Loader, which chainloads `fat:/_picoboot.nds`, and the test
+application runs as ordinary homebrew from `/roms` with a working DLDI driver.
+
+Three things a hand-edited ROM was missing, all handled by that pipeline:
+
+- **Key blocks must be transformed by the ROM game code**
+  (`KeyTransform.TransformTable(gameCode, 2, 8, ntrBlowfish)`), not copied raw
+  from an ARM7 BIOS dump. Raw injection was wrong in principle.
+- **The secure area at 0x4000-0x4800 must be KEY1-encrypted** with the
+  `encryObj` marker the console validates. `ndstool -se` refuses to create one
+  for homebrew; DSRomEncryptor builds it.
+- **A TWL-hybrid ROM needs TWL key blocks and a TWL area.** The bootloader is
+  hybrid (`unit_code & 2`, TWL flags bit 0), so it needs both key sets.
+
+`ndstool -f` does **not** fix the header CRC (ndstool 2.3.1 exits 0 and leaves
+0x15E untouched), so any hand edit inside the first 0x15E bytes ships a stale
+checksum. Compute it directly.
+
+DSRomEncryptor only encrypts when the stored secure-area CRC at 0x6C disagrees
+with what it computes. BlocksDS leaves 0x6C unset so the check always fires;
+ndstool fills it in, which makes a devkitPro ROM look already-prepared and
+silently skips encryption.
+
+Blowfish tables are Nintendo copyrighted data and are never stored in this
+repository. The build script reads user-supplied BIOS dumps and locates the TWL
+table by hash rather than a fixed offset, because dumps vary: the arm7i dump on
+this machine matched neither documented whole-file hash but carried the correct
+table at 0xC6D0.
 
 ### Confirming the flash without picotool
 
