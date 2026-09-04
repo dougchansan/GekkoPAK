@@ -158,6 +158,17 @@ void gpk_cmd_write_block(u8 opcode, u8 index, u32 word, const void *src)
     } while (gpk_busy());
 }
 
+// swiDelay units inserted after every F1 EXEC. Measured by the startup sweep
+// rather than guessed; reported with results so a run is reproducible.
+u32 gpkExecSettle = 256;
+
+void gpk_exec(u8 command)
+{
+    gpk_cmd_none(GPK_OP_EXEC, command, 0);
+    if (gpkExecSettle)
+        swiDelay(gpkExecSettle);
+}
+
 u32 gpk_raw_read32(u64 command)
 {
     u32 value = 0;

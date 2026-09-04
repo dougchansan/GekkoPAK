@@ -320,6 +320,32 @@ int main(void)
     LOG("using lat r/w %lu/%lu\n",
         (unsigned long)gpkLatencyRead, (unsigned long)gpkLatencyWrite);
 
+    // EXEC settle sweep.
+    //
+    // The register sweep above passes at every latency, so the register path is
+    // sound. What fails is HELLO, which is the only thing that issues F1 EXEC -
+    // and DSpico runs executeHighCommand() inside the card IRQ, so a following
+    // F2 arrives while the RP2040 is still busy. Measure how much settle time
+    // it actually needs instead of picking a number; the answer bounds the cost
+    // of every EXEC-based operation and belongs in the results.
+    static const u32 kSettles[] = { 0, 16, 64, 256, 1024 };
+    LOG("EXEC settle sweep (HELLO, of 16):\n");
+    u32 settle = 0;
+    for (u32 i = 0; i < sizeof(kSettles) / sizeof(kSettles[0]); i++) {
+        gpkExecSettle = kSettles[i];
+        u32 ok = 0;
+        for (u32 n = 0; n < 16; n++) {
+            u32 proto = 0;
+            if (gpk_hello(&proto, NULL, NULL, NULL) == GPK_OK && proto == GPK_PROTOCOL_V1)
+                ok++;
+        }
+        LOG("  settle %4lu : %2lu\n", (unsigned long)kSettles[i], (unsigned long)ok);
+        if (ok == 16 && settle == 0 && kSettles[i] != 0)
+            settle = kSettles[i];
+    }
+    gpkExecSettle = settle ? settle : 1024;
+    LOG("using settle %lu\n", (unsigned long)gpkExecSettle);
+
     consoleSelect(&sTop);
     draw_status();
 

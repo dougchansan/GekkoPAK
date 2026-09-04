@@ -148,7 +148,15 @@ void gpk_cmd_write_block(u8 opcode, u8 index, u32 word, const void *src);
 // F0/F2 stage register access.
 static inline void gpk_write_reg(u8 index, u32 value) { gpk_cmd_none(GPK_OP_WRITE_REG, index, value); }
 static inline u32  gpk_read_reg(u8 index)             { return gpk_cmd_read32(GPK_OP_READ_REG, index, 0); }
-static inline void gpk_exec(u8 command)               { gpk_cmd_none(GPK_OP_EXEC, command, 0); }
+// F1 EXEC needs a settle gap before the next command.
+//
+// DSpico runs executeHighCommand() inside the card IRQ handler, so issuing the
+// following F2 READ_REG immediately means the RP2040 is still busy and its PIO
+// response arrives late - the DS then clocks out FFFFFFFF. F0 is a single
+// store and always keeps up, which is why the register sweep passes while
+// HELLO, ALLOC and UPLOAD (all EXEC commands) fail.
+extern u32 gpkExecSettle;
+void gpk_exec(u8 command);
 static inline u32  gpk_event_depth(void)              { return gpk_read_reg(GPK_REG_EVENT_DEPTH); }
 
 // F3 legacy payload staging: writes one 32-bit word at wordIndex*4.
