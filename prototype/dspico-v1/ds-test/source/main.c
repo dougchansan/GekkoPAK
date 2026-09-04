@@ -158,20 +158,81 @@ static void log_details(void)
 }
 
 // ---------------------------------------------------------------------------
-// Result export. Writes both a human report and a machine-readable CSV so the
-// simulator can ingest the numbers directly.
+// Result export. Writes the diagnostic transcript, a human report and a
+// machine-readable CSV so the simulator can ingest the numbers directly.
 // ---------------------------------------------------------------------------
+
+// libfat mounts as "fat:/" on DS and "sd:/" on DSi, and a bare "/" only works
+// when the default device happens to be set. Rather than assume, find a prefix
+// a file can actually be created and read back through. Empty until verified.
+static char sPrefix[8];
+
+static bool gpk_join(char *out, size_t n, const char *tail)
+{
+    if (!sPrefix[0])
+        return false;
+    siprintf(out, "%s%s", sPrefix, tail);
+    (void)n;
+    return true;
+}
+
+static void gpk_find_prefix(void)
+{
+    static const char *kPrefixes[] = { "fat:/", "sd:/", "/" };
+    for (u32 i = 0; i < sizeof(kPrefixes) / sizeof(kPrefixes[0]); i++) {
+        char dir[64], path[72], back[32];
+        siprintf(dir, "%sgekkopak", kPrefixes[i]);
+        mkdir(dir, 0777);
+        siprintf(dir, "%sgekkopak/results", kPrefixes[i]);
+        mkdir(dir, 0777);
+        siprintf(path, "%sgekkopak/results/probe.txt", kPrefixes[i]);
+
+        FILE *f = fopen(path, "w");
+        if (!f)
+            continue;
+        fputs("gekkopak-write-probe\n", f);
+        fclose(f);
+
+        // Read it back. A successful fopen("w") is not proof the bytes reached
+        // the card - that assumption is exactly what made an earlier run report
+        // "saved" while nothing landed.
+        back[0] = 0;
+        f = fopen(path, "r");
+        if (f) {
+            if (!fgets(back, sizeof(back), f))
+                back[0] = 0;
+            fclose(f);
+        }
+        if (strncmp(back, "gekkopak-write-probe", 20) == 0) {
+            siprintf(sPrefix, "%s", kPrefixes[i]);
+            LOG("SD write ok via \"%s\"\n", sPrefix);
+            return;
+        }
+    }
+    LOG("SD write: no working prefix\n");
+}
+
 static void write_report_files(void)
 {
-    if (!sFatReady) {
-        LOG("SD not available; skipping save\n");
+    char path[64];
+    if (!sFatReady || !sPrefix[0]) {
+        LOG("SD not writable; skipping save\n");
         return;
     }
-    mkdir("/gekkopak", 0777);
-    mkdir("/gekkopak/results", 0777);
+
+    // Diagnostic transcript first: it is the primary artefact of a run, and
+    // when a run fails it is the transcript that says why.
+    gpk_join(path, sizeof(path), "gekkopak/results/diag.txt");
+    FILE *d = fopen(path, "w");
+    if (d) {
+        fwrite(sDiag, 1, sDiagLen, d);
+        fclose(d);
+    }
 
     const gpk_report_t *r = &sReport;
-    FILE *f = fopen("/gekkopak/results/latest.txt", "w");
+    gpk_join(path, sizeof(path), "gekkopak/results/latest.txt");
+    FILE *f = fopen(path, "w");
+    bool wrote_txt = (f != NULL);
     if (f) {
         fprintf(f, "GekkoPAK DSpico v1 hardware result\n");
         fprintf(f, "build       %s %s\n", __DATE__, __TIME__);
@@ -197,7 +258,9 @@ static void write_report_files(void)
         fclose(f);
     }
 
-    f = fopen("/gekkopak/results/latest.csv", "w");
+    gpk_join(path, sizeof(path), "gekkopak/results/latest.csv");
+    f = fopen(path, "w");
+    bool wrote_csv = (f != NULL);
     if (f) {
         fprintf(f, "metric,unit,min,median,mean,p95,max\n");
         const struct { const char *n; const gpk_stats_t *s; } rows[] = {
@@ -224,7 +287,15 @@ static void write_report_files(void)
                     (unsigned long)(r->batches[i].us_per_job_x1000 % 1000));
         fclose(f);
     }
-    LOG("saved /gekkopak/results/latest.{txt,csv}\n");
+    // libfat holds directory and FAT table updates in memory. Unmount to force
+    // the writeback, then remount so later saves still work. Without this a run
+    // can report a successful save while nothing reaches the card.
+    fatUnmount("fat:");
+    fatUnmount("sd:");
+    sFatReady = fatInitDefault();
+
+    LOG("save: diag %s txt %s csv %s\n",
+        d ? "ok" : "FAIL", wrote_txt ? "ok" : "FAIL", wrote_csv ? "ok" : "FAIL");
 }
 
 static void run(bool full)
@@ -239,6 +310,9 @@ static void run(bool full)
     draw_status();
     log_details();
     LOG("done: %s\n", pf(sReport.overall_ok));
+    // Autosave. The transcript and CSV are the point of the exercise, and
+    // depending on someone remembering a keypress loses runs.
+    write_report_files();
 }
 
 // Early boot progress marker.
@@ -289,13 +363,13 @@ int main(void)
     iprintf("A=quick X=full START=rerun\n");
     iprintf("SELECT=save report\n\n");
 
-    // fatInitDefault() is NOT called at startup. This ROM is not dlditool
-    // patched with the DSpico DLDI driver, so libfat has no valid driver to
-    // probe and the call is a plausible early hang. SD export is optional to
-    // the benchmark, so it is deferred behind SELECT where a failure costs
-    // nothing but a message.
-    sFatReady = false;
-    iprintf("SD: deferred (press SELECT)\n");
+    // SD init runs at startup again. It was deferred when an unpatched ROM made
+    // libfat a plausible boot hang, but the cartridge now boots through the
+    // DSpico Bootloader and Pico Loader, which supply a real DLDI driver.
+    sFatReady = fatInitDefault();
+    iprintf("SD: %s\n", sFatReady ? "mounted" : "unavailable");
+    if (sFatReady)
+        gpk_find_prefix();
 
     // Bus probe, before any GekkoPAK traffic.
     //
@@ -433,11 +507,8 @@ int main(void)
         else if (keys & KEY_START)
             run(sFullRun);
         else if (keys & KEY_SELECT) {
-            if (!sFatReady) {
-                LOG("init SD (libfat)...\n");
-                sFatReady = fatInitDefault();
-                LOG("SD: %s\n", sFatReady ? "ready" : "unavailable");
-            }
+            // Results are saved automatically after every run; SELECT just
+            // forces another write.
             if (sHaveReport)
                 write_report_files();
             else
