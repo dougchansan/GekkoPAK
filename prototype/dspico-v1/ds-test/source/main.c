@@ -361,10 +361,28 @@ int main(void)
     LOG("reg rt     : %08lX\n", (unsigned long)gpk_read_reg(GPK_REG_ARG0));
     gpk_write_reg(GPK_REG_ARG0, 16);
     gpk_exec(GPK_CMD_ALLOC);
-    LOG("alloc res  : %lu handle %lu size %lu\n",
-        (unsigned long)gpk_read_reg(GPK_REG_RESULT),
-        (unsigned long)gpk_read_reg(GPK_REG_OUT0),
-        (unsigned long)gpk_read_reg(GPK_REG_OUT1));
+
+    // Read into locals first. Passing several gpk_read_reg() calls as arguments
+    // to one printf leaves their order unspecified, and each one is a bus
+    // transaction - the previous run's confusing "RESULT=255, OUT0=FFFFFFFF,
+    // size=16" was read in an unknown sequence, so it could not be interpreted.
+    u32 pres = gpk_read_reg(GPK_REG_RESULT);
+    u32 phandle = gpk_read_reg(GPK_REG_OUT0);
+    u32 psize = gpk_read_reg(GPK_REG_OUT1);
+    LOG("alloc res %08lX h %08lX sz %lu\n",
+        (unsigned long)pres, (unsigned long)phandle, (unsigned long)psize);
+
+    // Same register four times in a row: if a value settles after the first
+    // read, this is a wake or turnaround effect; if it is stable but wrong,
+    // it is not timing at all.
+    LOG("res x4 :");
+    for (u32 n = 0; n < 4; n++)
+        LOG(" %08lX", (unsigned long)gpk_read_reg(GPK_REG_RESULT));
+    LOG("\n");
+    LOG("out0x4 :");
+    for (u32 n = 0; n < 4; n++)
+        LOG(" %08lX", (unsigned long)gpk_read_reg(GPK_REG_OUT0));
+    LOG("\n");
 
     consoleSelect(&sTop);
     draw_status();
