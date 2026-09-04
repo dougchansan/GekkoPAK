@@ -212,6 +212,28 @@ static void gpk_find_prefix(void)
     LOG("SD write: no working prefix\n");
 }
 
+// Write just the log transcript. Used at startup, where the probe output is
+// already the useful artefact and no benchmark has run yet.
+static void write_diag_only(void)
+{
+    char path[72];
+    if (!sFatReady || !sPrefix[0]) {
+        LOG("SD not writable; no diag\n");
+        return;
+    }
+    gpk_join(path, sizeof(path), "gekkopak/results/diag.txt");
+    FILE *d = fopen(path, "w");
+    if (d) {
+        fwrite(sDiag, 1, sDiagLen, d);
+        fclose(d);
+    }
+    // libfat caches directory and FAT updates; unmount to force the writeback.
+    fatUnmount("fat:");
+    fatUnmount("sd:");
+    sFatReady = fatInitDefault();
+    LOG("diag %s\n", d ? "saved" : "FAILED");
+}
+
 static void write_report_files(void)
 {
     char path[64];
@@ -485,6 +507,12 @@ int main(void)
     for (u32 n = 0; n < 4; n++)
         LOG(" %08lX", (unsigned long)gpk_read_reg(GPK_REG_OUT0));
     LOG("\n");
+
+    // Save the startup transcript before waiting for input. The bus probe,
+    // latency sweep, settle sweep and legacy probe all run unattended and are
+    // the diagnostic data that matters right now, so they must not depend on
+    // anyone pressing a key afterwards.
+    write_diag_only();
 
     consoleSelect(&sTop);
     draw_status();
