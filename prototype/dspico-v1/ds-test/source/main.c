@@ -227,10 +227,6 @@ static void write_diag_only(void)
         fwrite(sDiag, 1, sDiagLen, d);
         fclose(d);
     }
-    // libfat caches directory and FAT updates; unmount to force the writeback.
-    fatUnmount("fat:");
-    fatUnmount("sd:");
-    sFatReady = fatInitDefault();
     LOG("diag %s\n", d ? "saved" : "FAILED");
 }
 
@@ -309,13 +305,10 @@ static void write_report_files(void)
                     (unsigned long)(r->batches[i].us_per_job_x1000 % 1000));
         fclose(f);
     }
-    // libfat holds directory and FAT table updates in memory. Unmount to force
-    // the writeback, then remount so later saves still work. Without this a run
-    // can report a successful save while nothing reaches the card.
-    fatUnmount("fat:");
-    fatUnmount("sd:");
-    sFatReady = fatInitDefault();
-
+    // No unmount/remount. probe.txt persisted through a plain fclose, so the
+    // writeback happens without one - and the remount was failing, leaving
+    // sFatReady false. That is why the last run logged "diag saved" and then
+    // "SD not writable; skipping save" for the results that followed.
     LOG("save: diag %s txt %s csv %s\n",
         d ? "ok" : "FAIL", wrote_txt ? "ok" : "FAIL", wrote_csv ? "ok" : "FAIL");
 }

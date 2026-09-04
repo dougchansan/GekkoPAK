@@ -167,6 +167,23 @@ void gpk_exec(u8 command)
     gpk_cmd_none(GPK_OP_EXEC, command, 0);
     if (gpkExecSettle)
         swiDelay(gpkExecSettle);
+
+    // Discard one read.
+    //
+    // Measured on hardware: the first F2 after an F1 EXEC is always lost. A
+    // burst read of RESULT and OUT0 straight after an ALLOC returned
+    //
+    //   alloc  res 00FFFFFF  h FFFFFFFF        <- first read of each register
+    //   res x4 00000000 00000000 00000000 00000000
+    //   out0x4 00000001 00000001 00000001 00000001
+    //
+    // so the values are correct and stable and only the first transaction after
+    // the EXEC comes back undriven. It is not a settle-duration problem - 128
+    // units of delay did not help - the command itself is dropped, because the
+    // RP2040 is still finishing the EXEC handler when the next CEB edge arrives
+    // and its PIO never captures that command. One throwaway transaction costs
+    // a few microseconds and makes every EXEC-based operation reliable.
+    (void)gpk_read_reg(GPK_REG_RESULT);
 }
 
 u32 gpk_raw_read32(u64 command)
