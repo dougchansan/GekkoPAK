@@ -51,6 +51,8 @@ typedef struct {
     u32   event_depth;
     // RP2040-side F4 counters, read back over F2 indices 0xF0-0xF3.
     u32   f4_enter, f4_accepted, f4_complete, f4_parsed;
+    // Allocation handle obtained by the block stage; 0 means it never got that far.
+    u32   block_handle;
     gpk_stats_t cmd_latency;
     gpk_stats_t f4_latency;
     gpk_stats_t f5_latency;

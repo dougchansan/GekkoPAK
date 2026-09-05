@@ -116,6 +116,9 @@ static void draw_status(void)
             pf(r->legacy_ok), (unsigned long)r->checksum);
     iprintf("F4 %s F5 %s ck %s\n",
             pf(r->f4_ok), pf(r->f5_ok), pf(r->checksum_ok));
+    // Block-stage allocation handle: 0 means the stage returned before ever
+    // sending an F4, which would otherwise look identical to a dropped command.
+    iprintf("blkh %lu\n", (unsigned long)r->block_handle);
     // RP2040-side F4 counters: enter / accepted / complete / parsed.
     iprintf("F4cnt e%lu a%lu c%lu p%lu\n",
             (unsigned long)r->f4_enter, (unsigned long)r->f4_accepted,

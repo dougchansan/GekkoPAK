@@ -143,6 +143,7 @@ static bool gpk_stage_block_roundtrip(gpk_report_t *r)
 
     u32 size = 0;
     u32 handle = gpk_alloc(sizeof(gpkTestPattern), &size);
+    r->block_handle = handle;
     if (handle == 0)
         return false;
 
@@ -189,16 +190,6 @@ static bool gpk_stage_block_roundtrip(gpk_report_t *r)
             swiDelay(500);
         }
     }
-    // Read the RP2040-side F4 counters. These separate three cases the host
-    // cannot otherwise tell apart: the command never arriving, arriving but
-    // being rejected by the opcode/index/length checks, arriving and being
-    // accepted but the payload never completing, and the payload completing but
-    // the descriptor being rejected.
-    r->f4_enter    = gpk_read_reg(0xF0);
-    r->f4_accepted = gpk_read_reg(0xF1);
-    r->f4_complete = gpk_read_reg(0xF2);
-    r->f4_parsed   = gpk_read_reg(0xF3);
-
     if (r->event_depth == 0) {
         r->f5_ok = false;
         return false;
@@ -398,6 +389,20 @@ bool gpk_run_quick(gpk_report_t *r)
         return false;
     gpk_stage_legacy(r);
     bool block_ok = gpk_stage_block_roundtrip(r);
+
+    // Read the RP2040 F4 counters here, not inside the stage above.
+    //
+    // They were previously read after the block write, which is past an early
+    // return taken when the allocation fails - so a run that never got as far
+    // as sending an F4 reported e0 a0 c0 p0, which reads exactly like "the
+    // command never arrived". Those are different faults and must not look the
+    // same. Reading unconditionally here means the counters always describe
+    // what actually happened on the cartridge.
+    r->f4_enter    = gpk_read_reg(0xF0);
+    r->f4_accepted = gpk_read_reg(0xF1);
+    r->f4_complete = gpk_read_reg(0xF2);
+    r->f4_parsed   = gpk_read_reg(0xF3);
+
     r->overall_ok = r->device_present && r->legacy_ok && block_ok;
     return r->overall_ok;
 }
