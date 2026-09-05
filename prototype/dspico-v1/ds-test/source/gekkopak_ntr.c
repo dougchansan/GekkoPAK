@@ -216,6 +216,20 @@ u32 gpk_raw_read32(u64 command)
 {
     u32 value = 0;
     u32 guard = 0;
+    // Prime: the first transaction after a pause is dropped, so issue the
+    // command once and discard before taking the real reading.
+    if (1) {
+        *(vu64 *)&REG_MCCMD0 = __builtin_bswap64(command);
+        gpk_start(MCCNT1_DIR_READ | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_4 |
+                  GPK_SCRAMBLE_BITS | MCCNT1_READ_DATA_DESCRAMBLE |
+                  MCCNT1_LATENCY2(gpkLatencyRead) | MCCNT1_LATENCY1(0));
+        u32 g2 = 0;
+        do {
+            if (gpk_data_ready())
+                (void)REG_MCD1;
+            if (++g2 > 200000) { gpkTimeouts++; break; }
+        } while (gpk_busy());
+    }
     *(vu64 *)&REG_MCCMD0 = __builtin_bswap64(command);
     gpk_start(MCCNT1_DIR_READ | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_4 |
               GPK_SCRAMBLE_BITS | MCCNT1_READ_DATA_DESCRAMBLE |

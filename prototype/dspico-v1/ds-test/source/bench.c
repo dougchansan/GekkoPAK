@@ -194,11 +194,14 @@ static void gpk_samples_to_us(void)
 
 static void gpk_bench_cmd_latency(gpk_stats_t *out)
 {
+    // gpk_read_reg() issues two transactions to work around the dropped-first
+    // transaction behaviour, so measure the raw command here: this figure must
+    // be the cost of one F2, not two.
     for (u32 i = 0; i < GPK_BENCH_WARMUP; i++)
-        (void)gpk_read_reg(GPK_REG_ARG0);
+        (void)gpk_cmd_read32(GPK_OP_READ_REG, GPK_REG_ARG0, 0);
     for (u32 i = 0; i < GPK_BENCH_ITERATIONS; i++) {
         u32 t0 = gpk_ticks();
-        (void)gpk_read_reg(GPK_REG_ARG0);
+        (void)gpk_cmd_read32(GPK_OP_READ_REG, GPK_REG_ARG0, 0);
         sSamples[i] = gpk_ticks() - t0;
     }
     gpk_samples_to_us();

@@ -147,7 +147,24 @@ void gpk_cmd_write_block(u8 opcode, u8 index, u32 word, const void *src);
 
 // F0/F2 stage register access.
 static inline void gpk_write_reg(u8 index, u32 value) { gpk_cmd_none(GPK_OP_WRITE_REG, index, value); }
-static inline u32  gpk_read_reg(u8 index)             { return gpk_cmd_read32(GPK_OP_READ_REG, index, 0); }
+// Read a stage register reliably.
+//
+// Measured on hardware: the first transaction after any pause is dropped and
+// comes back undriven (FFFFFFFF, or a partly driven value like 00FFFFFF).
+// Burst reads show the value is then stable and correct from the second read
+// onwards - reading RESULT and OUT0 four times each returned
+// 00000000 x4 and 00000001 x4 while the immediately preceding single reads
+// returned FFFFFFFF. It is not a settle-duration problem; the command itself is
+// lost, because the RP2040 is still finishing the previous handler when the
+// next CEB edge arrives and its PIO never captures that command.
+//
+// So issue every control read twice and take the second. Benchmarks that need
+// single-transaction timing call gpk_cmd_read32 directly instead.
+static inline u32 gpk_read_reg(u8 index)
+{
+    (void)gpk_cmd_read32(GPK_OP_READ_REG, index, 0);
+    return gpk_cmd_read32(GPK_OP_READ_REG, index, 0);
+}
 // F1 EXEC needs a settle gap before the next command.
 //
 // DSpico runs executeHighCommand() inside the card IRQ handler, so issuing the
