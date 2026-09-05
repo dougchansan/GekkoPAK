@@ -116,6 +116,10 @@ static void draw_status(void)
             pf(r->legacy_ok), (unsigned long)r->checksum);
     iprintf("F4 %s F5 %s ck %s\n",
             pf(r->f4_ok), pf(r->f5_ok), pf(r->checksum_ok));
+    // RP2040-side F4 counters: enter / accepted / complete / parsed.
+    iprintf("F4cnt e%lu a%lu c%lu p%lu\n",
+            (unsigned long)r->f4_enter, (unsigned long)r->f4_accepted,
+            (unsigned long)r->f4_complete, (unsigned long)r->f4_parsed);
 
     if (!sFullRun) {
         iprintf("\nOVERALL %s\n", pf(r->overall_ok));
