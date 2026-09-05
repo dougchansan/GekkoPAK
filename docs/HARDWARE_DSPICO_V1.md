@@ -31,8 +31,8 @@ says so explicitly.
 | Bus, ROMCTRL, command byte order | **PASS (measured)** |
 | GekkoPAK protocol layer (HELLO) | **PASS (measured)** |
 | Legacy F0-F3 control path + checksum | **PASS (measured)** |
-| F4/F5 block transport | pending |
-| Benchmark timings | pending |
+| F4/F5 block transport | **FAIL - open** |
+| Benchmark timings | blocked on F4/F5 |
 
 ### Measured on hardware
 
@@ -56,6 +56,50 @@ with F3, committed with `UPLOAD`, and hashed by the RP2040 with FNV-1a to
 `0xf269b734` - the value predicted from the PIO shift directions, and distinct
 from the `0x899bd1de` a word-swap would produce. **The wire byte order is now
 confirmed end to end on silicon**, not merely derived from the source.
+
+### F4 block write: open problem
+
+The console-to-cartridge 512-byte transfer does not deliver data. `event depth`
+stays 0 after an F4, so DSpico queues no completion, across every variation
+tried: a bare write, a write preceded by a register read, a write retried with a
+fresh sequence number, and a write preceded by a zeroed-descriptor block.
+
+What is known:
+
+- Everything either side of it works. The same run reports `ALLOC` returning Ok
+  with handle 1, and the legacy F0-F3 path passing with checksum `F269B734`.
+- `timeouts` is 0, so no transfer ever failed to complete. The DS believes the
+  transfer finished normally.
+- The descriptor is correct by construction and identical to the one the
+  emulator model accepts.
+
+The most likely mechanism follows from those two facts together. The write loop
+only emits a word while `DATA_READY` is asserted:
+
+```c
+do {
+    if (gpk_data_ready()) { if (in < end) data = *in++; REG_MCD1 = data; }
+} while (gpk_busy());
+```
+
+If the flag never asserts, the loop sends nothing, completes without a timeout,
+and DSpico parses a block of zeros - `processDescriptorBatch` stops at the first
+zero magic and discards it silently. That is indistinguishable from what is
+observed. The structure matches `card_romCpuWrite` in the DSpico DLDI driver
+exactly, so the difference is in how the transfer is set up rather than how it
+is driven.
+
+Worth checking first, in order:
+
+1. Drive `dldi_writeSectors` from the test application to a scratch sector and
+   confirm whether *any* console-to-cartridge 512-byte write works from this
+   context. That separates "GekkoPAK's F4 is wrong" from "write transfers do not
+   work here at all", and it is the same distinction the B8/E4 probe drew for
+   reads.
+2. Instrument `ntrc_gekkopakWriteBlockCmd1` on the RP2040 to report whether the
+   command arrives and how many payload words the PIO actually captures.
+3. Compare the ROMCTRL word against `writeSdData`'s bit for bit; that call is
+   known to work on this hardware.
 
 ### The first transaction after a pause is dropped
 
