@@ -189,6 +189,16 @@ static bool gpk_stage_block_roundtrip(gpk_report_t *r)
             swiDelay(500);
         }
     }
+    // Read the RP2040-side F4 counters. These separate three cases the host
+    // cannot otherwise tell apart: the command never arriving, arriving but
+    // being rejected by the opcode/index/length checks, arriving and being
+    // accepted but the payload never completing, and the payload completing but
+    // the descriptor being rejected.
+    r->f4_enter    = gpk_read_reg(0xF0);
+    r->f4_accepted = gpk_read_reg(0xF1);
+    r->f4_complete = gpk_read_reg(0xF2);
+    r->f4_parsed   = gpk_read_reg(0xF3);
+
     if (r->event_depth == 0) {
         r->f5_ok = false;
         return false;

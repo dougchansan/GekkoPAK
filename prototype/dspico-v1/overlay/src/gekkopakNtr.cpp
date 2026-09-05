@@ -145,6 +145,18 @@ std::array<Allocation, kMaxAllocations> sAllocations{};
 std::array<Job, kMaxJobs> sJobs{};
 std::array<CompletionRecordV1, kCompletionQueueDepth> sCompletions{};
 u32 sNextJob = 1;
+
+// F4 instrumentation.
+//
+// The host has run out of things it can distinguish. From the DS side an F4
+// that never arrives, one that arrives but whose payload is not captured, and
+// one whose descriptor is rejected are all identical: no completion appears and
+// the transfer reports no error. These counters separate them, and are read
+// back through F2 at indices 0xF0-0xF3.
+u32 sF4Enter;     // cmd1 handler entered at all
+u32 sF4Accepted;  // passed the opcode/index/length checks and began a read
+u32 sF4Complete;  // payload fully received, completion callback fired
+u32 sF4Parsed;    // descriptors accepted by processDescriptorBatch
 u32 sCompletionRead = 0;
 u32 sCompletionWrite = 0;
 u32 sCompletionCount = 0;
@@ -412,6 +424,7 @@ void processDescriptorBatch(u32 meaningfulBytes) {
     }
     if (count == 0)
         return;
+    sF4Parsed += static_cast<u32>(count);
 
     const u32 batchTransportX1000 = v1TransportUsX1000();
     const u32 transportShareX1000 = (batchTransportX1000 + count / 2) / count;
@@ -480,6 +493,7 @@ void processDescriptorBatch(u32 meaningfulBytes) {
 }
 
 void blockWriteComplete(ntr_rom_emu_t* romEmu) {
+    ++sF4Complete;
     const u32 meaningfulBytes = romEmu->cmd1 & 0xFFFFu;
     if (meaningfulBytes == 0 || meaningfulBytes > kBlockBytes)
         return;
@@ -502,6 +516,7 @@ extern "C" void gekkopak_ntr_reset(void) {
     sCompletions.fill(CompletionRecordV1{});
     sNextJob = 1;
     sCompletionRead = sCompletionWrite = sCompletionCount = 0;
+    sF4Enter = sF4Accepted = sF4Complete = sF4Parsed = 0;
 }
 
 extern "C" void ntrc_gekkopakWriteRegCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
@@ -533,6 +548,14 @@ extern "C" void ntrc_gekkopakReadRegCmd1(ntr_rom_emu_t* romEmu, u32, pio_hw_t* p
         const u8 index = commandIndex(romEmu);
         if (index == kEventCompletionDepth)
             value = sCompletionCount;
+        else if (index == 0xF0)
+            value = sF4Enter;
+        else if (index == 0xF1)
+            value = sF4Accepted;
+        else if (index == 0xF2)
+            value = sF4Complete;
+        else if (index == 0xF3)
+            value = sF4Parsed;
         else if (index < sStage.size())
             value = sStage[index];
     }
@@ -558,12 +581,14 @@ extern "C" void ntrc_gekkopakWriteBlockCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t
     finishCmd0(romEmu);
 }
 extern "C" void ntrc_gekkopakWriteBlockCmd1(ntr_rom_emu_t* romEmu, u32 word, pio_hw_t* pio) {
+    ++sF4Enter;
     if (!commandMatches(romEmu, kWireWriteBlock) || commandIndex(romEmu) != 0 ||
         (word & 0xFFFFu) == 0 || (word & 0xFFFFu) > kBlockBytes) {
         ntrc_noPayload(pio);
         ntrc_finishGameNoScrambleCmd1(romEmu);
         return;
     }
+    ++sF4Accepted;
     ntrc_beginRead(pio, kBlockBytes);
     ntrc_finishGameNoScrambleCmd1WithReadPayload(
         romEmu, reinterpret_cast<u32*>(sBlockTx.data()), kBlockBytes, blockWriteComplete);

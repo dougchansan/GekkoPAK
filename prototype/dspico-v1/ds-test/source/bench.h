@@ -49,6 +49,8 @@ typedef struct {
     u32   legacy_checksum;
     bool  legacy_ok;
     u32   event_depth;
+    // RP2040-side F4 counters, read back over F2 indices 0xF0-0xF3.
+    u32   f4_enter, f4_accepted, f4_complete, f4_parsed;
     gpk_stats_t cmd_latency;
     gpk_stats_t f4_latency;
     gpk_stats_t f5_latency;
