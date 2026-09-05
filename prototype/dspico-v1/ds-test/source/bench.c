@@ -11,6 +11,7 @@ const u8 gpkTestPattern[16] = {
 
 static u8  sBlock[GPK_BLOCK_BYTES] __attribute__((aligned(4)));
 static u8  sReadBlock[GPK_BLOCK_BYTES] __attribute__((aligned(4)));
+static u8  sPrimeBlock[GPK_BLOCK_BYTES] __attribute__((aligned(4)));
 static u32 sSamples[GPK_BENCH_ITERATIONS];
 
 static int cmp_u32(const void *a, const void *b)
@@ -162,7 +163,23 @@ static bool gpk_stage_block_roundtrip(gpk_report_t *r)
     r->event_depth = 0;
     for (u32 attempt = 0; attempt < 2 && r->event_depth == 0; attempt++) {
         ((gpk_descriptor_t *)sBlock)->sequence = 1 + attempt;
-        (void)gpk_read_reg(GPK_REG_RESULT);
+
+        // Prime with a block write, not a register read.
+        //
+        // The dropped-first-transaction behaviour applies to the F4 here too,
+        // and the previous prime was an F2 read - so the real F4 was still the
+        // first write-direction transfer after a run of reads. A block whose
+        // descriptor region is zeroed is the safe primer: processDescriptorBatch
+        // stops at the first zero magic, so it is accepted and discarded and
+        // queues no completion.
+        //
+        // This also matches the symptom. The write loop only emits bytes while
+        // DATA_READY is set; a transfer that completes without it ever
+        // asserting sends nothing, records no timeout - and timeouts were 0 -
+        // and leaves DSpico parsing a zeroed block it quietly drops, which is
+        // indistinguishable from "event depth 0".
+        memset(sPrimeBlock, 0, sizeof(sPrimeBlock));
+        gpk_write_block(sPrimeBlock, GPK_BLOCK_BYTES);
         gpk_write_block(sBlock, GPK_DESCRIPTOR_BYTES + sizeof(gpkTestPattern));
         r->f4_ok = true;
         for (int i = 0; i < 16; i++) {
