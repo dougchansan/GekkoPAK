@@ -151,16 +151,26 @@ static bool gpk_stage_block_roundtrip(gpk_report_t *r)
                          sizeof(gpkTestPattern), GPK_FLAG_INLINE_INPUT, 100000);
     memcpy(sBlock + GPK_DESCRIPTOR_BYTES, gpkTestPattern, sizeof(gpkTestPattern));
 
-    gpk_write_block(sBlock, GPK_DESCRIPTOR_BYTES + sizeof(gpkTestPattern));
-    r->f4_ok = true;
-
-    // Compact status transaction rather than a busy loop.
+    // Prime before the block write, and retry it once.
+    //
+    // The first transaction after a pause is dropped on this cartridge - the
+    // reason control reads are issued twice. A single F4 following the ALLOC
+    // sequence is exactly that case, and a dropped F4 queues no completion,
+    // which is what "event depth 0" reported. Priming with a cheap read and
+    // resending on an empty queue covers it. Each attempt uses its own sequence
+    // number so a completion can be attributed to the attempt that produced it.
     r->event_depth = 0;
-    for (int i = 0; i < 16; i++) {
-        r->event_depth = gpk_event_depth();
-        if (r->event_depth != 0)
-            break;
-        swiDelay(500);
+    for (u32 attempt = 0; attempt < 2 && r->event_depth == 0; attempt++) {
+        ((gpk_descriptor_t *)sBlock)->sequence = 1 + attempt;
+        (void)gpk_read_reg(GPK_REG_RESULT);
+        gpk_write_block(sBlock, GPK_DESCRIPTOR_BYTES + sizeof(gpkTestPattern));
+        r->f4_ok = true;
+        for (int i = 0; i < 16; i++) {
+            r->event_depth = gpk_event_depth();
+            if (r->event_depth != 0)
+                break;
+            swiDelay(500);
+        }
     }
     if (r->event_depth == 0) {
         r->f5_ok = false;
@@ -173,7 +183,7 @@ static bool gpk_stage_block_roundtrip(gpk_report_t *r)
     r->f5_ok = (c->magic == GPK_COMP_MAGIC) &&
                (c->version == GPK_BLOCK_VERSION) &&
                (c->status == GPK_OK) &&
-               (c->sequence == 1) &&
+               (c->sequence == 1 || c->sequence == 2) &&
                (c->job_handle != 0);
     r->checksum    = c->checksum;
     r->checksum_ok = (c->checksum == GPK_EXPECTED_CHECKSUM);

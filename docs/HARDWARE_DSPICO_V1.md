@@ -22,20 +22,77 @@ says so explicitly.
 | Step | Result |
 |---|---|
 | GekkoPAK overlay applied and verified | PASS |
-| DSpico firmware built (RelWithDebInfo, real ROM) | PASS |
+| DSpico firmware built (RelWithDebInfo, bootloader ROM) | PASS |
 | `gekkopak_test.nds` built | PASS |
 | Cartridge boot ROM prepared (DSRomEncryptor pipeline) | PASS |
 | Firmware flashed to confirmed DSpico | PASS |
 | Cartridge detected by New 2DS XL | PASS |
 | Pico Loader menu boots with GekkoPAK overlay present | PASS |
-| GekkoPAK transport exercised on hardware | **PENDING** |
+| Bus, ROMCTRL, command byte order | **PASS (measured)** |
+| GekkoPAK protocol layer (HELLO) | **PASS (measured)** |
+| Legacy F0-F3 control path + checksum | **PASS (measured)** |
+| F4/F5 block transport | pending |
+| Benchmark timings | pending |
 
-Two results are already worth recording. The GekkoPAK overlay does **not** break
-DSpico's card emulation - a firmware carrying it boots the cartridge normally,
-which had been an open hypothesis while nothing would boot at all. And the
-device is back on its original picoLoader setup rather than a replacement boot
-ROM, so iterating on the test application is now a file copy to the SD card
-instead of a BOOTSEL cycle and a reflash.
+### Measured on hardware
+
+These are readings from a New 2DS XL driving the DSpico, not model output.
+
+| Reading | Value | Meaning |
+|---|---|---|
+| `B8` card id | `C00000C2` | bus, ROMCTRL setup, slot-1 ownership and command serialization all correct |
+| `E4` sd status | `00000001` | cartridge is in unscrambled game mode; DSpico extended dispatch reached |
+| protocol | `1.0` (`0x00010000`) | GekkoPAK overlay answering |
+| capabilities | `0000001F` | `kBaseCaps | kCapBlockTransport` - block transport advertised |
+| local RAM | 64 KiB | matches `GEKKOPAK_LOCAL_BYTES` |
+| register round trip | `DEADBEEF` in, `DEADBEEF` out | command assembly is byte-exact |
+| `ALLOC` | result `0` (Ok), handle `1`, size `16` | allocator works |
+| **legacy F0-F3 checksum** | **`F269B734`** | **matches the reference exactly** |
+| F2 read reliability | 31/32 at latency 4, 32/32 at 8 and above | register path is solid |
+| bus timeouts | 0 | no transfer ever failed to complete |
+
+The checksum is the significant one. The 16-byte reference pattern was staged
+with F3, committed with `UPLOAD`, and hashed by the RP2040 with FNV-1a to
+`0xf269b734` - the value predicted from the PIO shift directions, and distinct
+from the `0x899bd1de` a word-swap would produce. **The wire byte order is now
+confirmed end to end on silicon**, not merely derived from the source.
+
+### The first transaction after a pause is dropped
+
+The single most important hardware behaviour found, and it is not in any
+documentation.
+
+After any pause in bus traffic the next transaction is lost. It returns
+undriven data - `FFFFFFFF`, or a partly driven value such as `00FFFFFF` - and
+every transaction after it is stable and correct. A burst read makes it
+unambiguous: reading `RESULT` and `OUT0` four times each returned
+`00000000` x4 and `00000001` x4, while the single reads immediately before them
+returned `FFFFFFFF`.
+
+It is not a timing-margin problem. Latency was swept from 4 to 63 with no
+effect, and an EXEC settle delay was swept from 0 to 1024 with no effect. The
+command itself is dropped: the RP2040 is still finishing the previous handler
+when the next `CEB` edge arrives, so its PIO never captures that command at all.
+
+This is why the symptoms moved around so much. It looked like an EXEC problem
+when EXEC-based commands failed, and like a wire-format problem when `B8` and
+the `DEADBEEF` round trip failed, but the common factor was always a
+transaction following a gap. The DS-side fix is to issue control reads twice and
+take the second, and to prime before an isolated block transfer. Sequential
+traffic - which is what the benchmarks measure - is unaffected.
+
+For the RP2040 side, this is worth addressing at source rather than papering
+over from the host: the handler should hand its response to the PIO before doing
+any other work.
+
+### SD result export: abandoned
+
+Results are collected by photographing the summary page. Writing them to the
+card was tried at length and never worked reliably - only the first write of a
+run reached the card, with later writes reporting success and vanishing. Four
+explanations were investigated and all were wrong: an unflushed libfat cache,
+the path prefix, an `E4` desync of DSpico's SD state machine, and a missing
+readback. The test application therefore renders everything onto one screen.
 
 ### Getting a homebrew ROM to boot: what actually works
 
