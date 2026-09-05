@@ -7,6 +7,7 @@
 
 #include <nds.h>
 #include <fat.h>
+#include <nds/arm9/dldi.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -198,6 +199,49 @@ static bool gpk_join(char *out, size_t n, const char *tail)
     siprintf(out, "%s%s", sPrefix, tail);
     (void)n;
     return true;
+}
+
+// Does the DLDI write path work, and does it survive GekkoPAK bus traffic?
+//
+// Run before and after our own card commands. probe.txt, written before any
+// GekkoPAK traffic, has reached the card on every single run, while every file
+// written afterwards was lost despite reporting success. If the "before" test
+// passes and the "after" test fails, then our traffic breaks the DLDI write
+// path - and since F4 is also a console-to-cartridge write that silently
+// delivers nothing, the two failures are plausibly the same root cause.
+//
+// This deliberately does not call writeSectors() on a raw sector number. A
+// wrong sector on a live FAT32 card destroys data, and a directory has already
+// been lost once here. Going through a file we own exercises exactly the same
+// dldi_writeSectors path underneath.
+static bool gpk_dldi_write_test(const char *when, u32 tag)
+{
+    char path[80], line[64], back[64];
+    if (!sPrefix[0]) {
+        LOG("dldi %s: no prefix\n", when);
+        return false;
+    }
+    siprintf(path, "%sgekkopak/results/wtest.txt", sPrefix);
+    siprintf(line, "dldi-%s-%lu\n", when, (unsigned long)tag);
+
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        LOG("dldi %s: open FAIL\n", when);
+        return false;
+    }
+    fputs(line, f);
+    fclose(f);
+
+    back[0] = 0;
+    f = fopen(path, "r");
+    if (f) {
+        if (!fgets(back, sizeof(back), f))
+            back[0] = 0;
+        fclose(f);
+    }
+    bool ok = (strcmp(back, line) == 0);
+    LOG("dldi %s: %s\n", when, ok ? "WRITE OK" : "WRITE FAIL");
+    return ok;
 }
 
 static void gpk_find_prefix(void)
@@ -431,6 +475,8 @@ int main(void)
     if (sFatReady)
         gpk_find_prefix();
 
+    gpk_dldi_write_test("pre", 1);
+
     // Bus probe, before any GekkoPAK traffic.
     //
     // Each line isolates one layer, so a failure points at a specific thing
@@ -568,6 +614,9 @@ int main(void)
 
     consoleSelect(&sTop);
     draw_status();
+
+    // Repeat the write test now that GekkoPAK commands have been issued.
+    gpk_dldi_write_test("post", 2);
 
     // Run the full benchmark automatically. Collection is now a single
     // photograph of the summary page, so requiring a keypress only adds a
