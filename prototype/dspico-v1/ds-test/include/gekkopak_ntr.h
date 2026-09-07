@@ -147,36 +147,41 @@ void gpk_cmd_write_block(u8 opcode, u8 index, u32 word, const void *src);
 
 // F0/F2 stage register access.
 static inline void gpk_write_reg(u8 index, u32 value) { gpk_cmd_none(GPK_OP_WRITE_REG, index, value); }
-// Read a stage register reliably.
+// Read a stage register until two consecutive reads agree.
 //
-// Measured on hardware: the first transaction after any pause is dropped and
-// comes back undriven (FFFFFFFF, or a partly driven value like 00FFFFFF).
-// Burst reads show the value is then stable and correct from the second read
-// onwards - reading RESULT and OUT0 four times each returned
-// 00000000 x4 and 00000001 x4 while the immediately preceding single reads
-// returned FFFFFFFF. It is not a settle-duration problem; the command itself is
-// lost, because the RP2040 is still finishing the previous handler when the
-// next CEB edge arrives and its PIO never captures that command.
+// The first transaction after a pause is dropped and returns undriven data, so
+// a single read is unreliable. Two reads and take the second was enough for
+// isolated control traffic, but not after a burst of 512-byte writes: a matrix
+// run showed the RP2040 counters reading e1 a4 c4 p2 on one row - real values,
+// proving the F4 path completes and parses descriptors - while the event-depth
+// read on the same row returned FFFFFFFF. Losing the answer is what made the
+// block transport look broken when it was not.
 //
-// So issue every control read twice and take the second. Benchmarks that need
-// single-transaction timing call gpk_cmd_read32 directly instead.
+// Requiring agreement rejects a dropped transaction rather than trusting a
+// fixed number of retries, and an all-ones result is never accepted, since that
+// is what an undriven bus reads as. Benchmarks that need single-transaction
+// timing call gpk_cmd_read32 directly.
 static inline u32 gpk_read_reg(u8 index)
 {
-    (void)gpk_cmd_read32(GPK_OP_READ_REG, index, 0);
-    return gpk_cmd_read32(GPK_OP_READ_REG, index, 0);
+    u32 prev = gpk_cmd_read32(GPK_OP_READ_REG, index, 0);
+    for (int i = 0; i < 6; i++) {
+        u32 now = gpk_cmd_read32(GPK_OP_READ_REG, index, 0);
+        if (now == prev && now != 0xFFFFFFFFu)
+            return now;
+        prev = now;
+    }
+    return prev;
 }
-// F1 EXEC needs a settle gap before the next command.
-//
-// DSpico runs executeHighCommand() inside the card IRQ handler, so issuing the
-// following F2 READ_REG immediately means the RP2040 is still busy and its PIO
-// response arrives late - the DS then clocks out FFFFFFFF. F0 is a single
-// store and always keeps up, which is why the register sweep passes while
-// HELLO, ALLOC and UPLOAD (all EXEC commands) fail.
+
+// F1 EXEC needs a settle gap before the next command, because DSpico runs
+// executeHighCommand() inside the card IRQ handler.
 extern u32 gpkExecSettle;
+void gpk_exec(u8 command);
+
 // Count of bus transfers that never completed; nonzero means a real bus fault.
 extern u32 gpkTimeouts;
-void gpk_exec(u8 command);
-static inline u32  gpk_event_depth(void)              { return gpk_read_reg(GPK_REG_EVENT_DEPTH); }
+
+static inline u32 gpk_event_depth(void) { return gpk_read_reg(GPK_REG_EVENT_DEPTH); }
 
 // F3 legacy payload staging: writes one 32-bit word at wordIndex*4.
 static inline void gpk_payload_word(u8 wordIndex, u32 value) { gpk_cmd_none(GPK_OP_PAYLOAD_WORD, wordIndex, value); }

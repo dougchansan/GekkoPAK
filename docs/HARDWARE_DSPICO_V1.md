@@ -31,7 +31,8 @@ says so explicitly.
 | Bus, ROMCTRL, command byte order | **PASS (measured)** |
 | GekkoPAK protocol layer (HELLO) | **PASS (measured)** |
 | Legacy F0-F3 control path + checksum | **PASS (measured)** |
-| F4/F5 block transport | **FAIL - open** |
+| F4 block write reaches the cartridge and parses | **PASS (measured)** |
+| F5 completion readback | blocked on read reliability |
 | Benchmark timings | blocked on F4/F5 |
 
 ### Measured on hardware
@@ -57,50 +58,36 @@ with F3, committed with `UPLOAD`, and hashed by the RP2040 with FNV-1a to
 from the `0x899bd1de` a word-swap would produce. **The wire byte order is now
 confirmed end to end on silicon**, not merely derived from the source.
 
-### F4 block write: open problem
+### F4 block write: the transport works; reading the answer does not
 
-The console-to-cartridge 512-byte transfer does not deliver data. `event depth`
-stays 0 after an F4, so DSpico queues no completion, across every variation
-tried: a bare write, a write preceded by a register read, a write retried with a
-fresh sequence number, and a write preceded by a zeroed-descriptor block.
+Instrumenting the RP2040 settled this, and the earlier conclusion in this
+document was wrong. Counters were added to the overlay - `sF4Enter`,
+`sF4Accepted`, `sF4Complete`, `sF4Parsed`, readable over F2 at `0xF0`-`0xF3` -
+and one matrix row came back
 
-What is known:
-
-- Everything either side of it works. The same run reports `ALLOC` returning Ok
-  with handle 1, and the legacy F0-F3 path passing with checksum `F269B734`.
-- `timeouts` is 0, so no transfer ever failed to complete. The DS believes the
-  transfer finished normally.
-- The descriptor is correct by construction and identical to the one the
-  emulator model accepts.
-
-The most likely mechanism follows from those two facts together. The write loop
-only emits a word while `DATA_READY` is asserted:
-
-```c
-do {
-    if (gpk_data_ready()) { if (in < end) data = *in++; REG_MCD1 = data; }
-} while (gpk_busy());
+```
+primed   d FFFFFFFF   e1 a4 c4 p2
 ```
 
-If the flag never asserts, the loop sends nothing, completes without a timeout,
-and DSpico parses a block of zeros - `processDescriptorBatch` stops at the first
-zero magic and discards it silently. That is indistinguishable from what is
-observed. The structure matches `card_romCpuWrite` in the DSpico DLDI driver
-exactly, so the difference is in how the transfer is set up rather than how it
-is driven.
+`c4` and `p2` are the important values. The F4 payload completed four times and
+`processDescriptorBatch` accepted two descriptors, so **the console-to-cartridge
+512-byte transfer does deliver data and the descriptor is parsed**. On the same
+row the event-depth read returned `FFFFFFFF`, undriven.
 
-Worth checking first, in order:
+So F4 was never broken. Every "event depth 0" result was a lost *read* of the
+completion count, not a lost write, and the same dropped-transaction behaviour
+described below was the cause throughout. Several rounds were spent varying the
+write - meaningful-byte count, inline against pre-uploaded payload, primer
+blocks, write latency from 8 to 63 - when the write had been working all along.
 
-1. Drive `dldi_writeSectors` from the test application to a scratch sector and
-   confirm whether *any* console-to-cartridge 512-byte write works from this
-   context. That separates "GekkoPAK's F4 is wrong" from "write transfers do not
-   work here at all", and it is the same distinction the B8/E4 probe drew for
-   reads.
-2. Instrument `ntrc_gekkopakWriteBlockCmd1` on the RP2040 to report whether the
-   command arrives and how many payload words the PIO actually captures.
-3. Compare the ROMCTRL word against `writeSdData`'s bit for bit; that call is
-   known to work on this hardware.
-
+Two lessons worth keeping. Instrumenting the far side would have cost one flash
+cycle and was worth doing far earlier: from the host, a command that never
+arrives, one that is rejected, one whose payload never completes and one whose
+answer is lost are indistinguishable, and four different fixes were attempted
+against a single symptom. And the counters themselves had to be read carefully -
+an early version reported deltas, so an undriven read wrapped to about 4e9 and
+looked like a large count, and another version read them past an early return so
+a stage that never ran reported the same zeros as a command that never arrived.
 ### The first transaction after a pause is dropped
 
 The single most important hardware behaviour found, and it is not in any
