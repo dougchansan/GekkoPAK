@@ -392,6 +392,15 @@ static void gpk_compute_bandwidth(gpk_report_t *r)
 // attempt so every variant reports its own deltas.
 u32 gpk_f4_matrix(gpk_f4_variant_t *out)
 {
+    // Refuse to run on a dead link. The first matrix attempt ran after a USB
+    // mass-storage session had left the cartridge wedged - B8 read 00000000 and
+    // HELLO did not answer - so every variant "failed" for a reason that had
+    // nothing to do with F4. Numbers gathered over a broken bus are worse than
+    // no numbers, because they look like evidence.
+    u32 protocol = 0;
+    if (gpk_hello(&protocol, NULL, NULL, NULL) != GPK_OK || protocol != GPK_PROTOCOL_V1)
+        return 0;
+
     u32 handle = 0, size = 0;
     handle = gpk_alloc(sizeof(gpkTestPattern), &size);
     if (handle == 0)
@@ -441,12 +450,16 @@ u32 gpk_f4_matrix(gpk_f4_variant_t *out)
                 swiDelay(500);
         }
 
+        // Report absolute counters, not deltas. An undriven read makes an
+        // unsigned delta wrap to ~4e9 and masquerade as a huge count, which is
+        // how the first matrix run produced "a4294967294" and told us nothing.
+        (void)e0; (void)a0; (void)c0; (void)p0;
         out[v].name        = kNames[v];
         out[v].completions = depth;
-        out[v].enter       = gpk_read_reg(0xF0) - e0;
-        out[v].accepted    = gpk_read_reg(0xF1) - a0;
-        out[v].complete    = gpk_read_reg(0xF2) - c0;
-        out[v].parsed      = gpk_read_reg(0xF3) - p0;
+        out[v].enter       = gpk_read_reg(0xF0);
+        out[v].accepted    = gpk_read_reg(0xF1);
+        out[v].complete    = gpk_read_reg(0xF2);
+        out[v].parsed      = gpk_read_reg(0xF3);
         gpkLatencyWrite    = savedLatency;
     }
 
