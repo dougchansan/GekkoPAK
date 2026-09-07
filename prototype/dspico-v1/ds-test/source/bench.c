@@ -231,6 +231,7 @@ static void gpk_bench_cmd_latency(gpk_stats_t *out)
         u32 t0 = gpk_ticks();
         (void)gpk_cmd_read32(GPK_OP_READ_REG, GPK_REG_ARG0, 0);
         sSamples[i] = gpk_ticks() - t0;
+        gpk_tick();
     }
     gpk_samples_to_us();
     gpk_stats_compute(sSamples, GPK_BENCH_ITERATIONS, out);
@@ -247,6 +248,7 @@ static void gpk_bench_f4(gpk_stats_t *out, u32 meaningfulBytes)
         u32 t0 = gpk_ticks();
         gpk_write_block(sBlock, meaningfulBytes);
         sSamples[i] = gpk_ticks() - t0;
+        gpk_tick();
     }
     gpk_samples_to_us();
     gpk_stats_compute(sSamples, GPK_BENCH_ITERATIONS, out);
@@ -261,6 +263,7 @@ static void gpk_bench_f5(gpk_stats_t *out)
         u32 t0 = gpk_ticks();
         gpk_read_block(sReadBlock, GPK_BLOCK_BYTES);
         sSamples[i] = gpk_ticks() - t0;
+        gpk_tick();
     }
     gpk_samples_to_us();
     gpk_stats_compute(sSamples, GPK_BENCH_ITERATIONS, out);
@@ -275,6 +278,7 @@ static void gpk_bench_rtt(gpk_stats_t *out)
         (void)gpk_event_depth();
         gpk_read_block(sReadBlock, GPK_BLOCK_BYTES);
         sSamples[i] = gpk_ticks() - t0;
+        gpk_tick();
     }
     gpk_samples_to_us();
     gpk_stats_compute(sSamples, GPK_BENCH_ITERATIONS, out);
@@ -301,6 +305,7 @@ static void gpk_bench_sizes(gpk_report_t *r)
             for (u32 w = 0; w < words; w++)
                 gpk_payload_word((u8)w, 0x5A5A5A5Au);
             sSamples[i] = gpk_ticks() - t0;
+        gpk_tick();
         }
         gpk_samples_to_us();
         gpk_stats_compute(sSamples, GPK_BENCH_ITERATIONS, &r->sizes[s].word_path);
@@ -346,6 +351,7 @@ static bool gpk_bench_batch(gpk_report_t *r)
             gpk_write_block(sBlock, meaningful);
             gpk_read_block(sReadBlock, meaningful);
             total += gpk_ticks() - t0;
+            gpk_tick();
             if (i == 0) {
                 for (u32 c = 0; c < n; c++) {
                     const gpk_completion_t *rec =
@@ -454,6 +460,7 @@ u32 gpk_f4_matrix(gpk_f4_variant_t *out)
         // unsigned delta wrap to ~4e9 and masquerade as a huge count, which is
         // how the first matrix run produced "a4294967294" and told us nothing.
         (void)e0; (void)a0; (void)c0; (void)p0;
+        gpk_tick();
         out[v].name        = kNames[v];
         out[v].completions = depth;
         out[v].enter       = gpk_read_reg(0xF0);

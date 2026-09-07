@@ -68,6 +68,9 @@ typedef struct {
     u32   latency_write;
 } gpk_report_t;
 
+// Heartbeat, defined in main.c. Called outside timed regions only.
+void gpk_tick(void);
+
 void gpk_stats_compute(u32 *samples, u32 count, gpk_stats_t *out);
 // Run several F4 variants in one boot and report which, if any, queues a
 // completion. One hypothesis per hardware round trip is far too slow when each

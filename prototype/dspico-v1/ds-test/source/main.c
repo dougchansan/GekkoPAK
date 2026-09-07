@@ -68,9 +68,38 @@ static void gpk_status(const char *fmt, ...)
     va_end(ap);
 
     consoleSelect(&sTop);
-    // Row 22, column 0, then pad to the full width so the previous stage name
-    // cannot show through a shorter one.
+    // Row 22, column 0, then pad to full width so a shorter stage name cannot
+    // leave the previous one showing through.
     iprintf("\x1b[22;0H>> %-28s", line);
+
+    // Also announce on the log screen. The ANSI positioning above may not be
+    // honoured by this console - a run reported no visible status at all - and
+    // the log screen is known to display, so this is the dependable copy.
+    consoleSelect(&sBottom);
+    iprintf("\n[%s]\n", line);
+    consoleSelect(&sTop);
+}
+
+// Heartbeat.
+//
+// Long stages run thousands of bus transactions with no screen change, which is
+// indistinguishable from a hang - and several runs tonight genuinely hung. This
+// prints a spinning character on the log screen periodically, so motion means
+// progress and a frozen character means stuck.
+//
+// It writes straight to the console rather than through LOG(), so it never
+// enters the transcript, and every call site is outside a timed region so it
+// cannot skew a measurement.
+static u32 sTickCount;
+
+void gpk_tick(void)
+{
+    if ((++sTickCount & 0x3F) != 0)
+        return;
+    static const char kSpin[4] = { '|', '/', '-', '\\' };
+    consoleSelect(&sBottom);
+    iprintf("%c", kSpin[(sTickCount >> 6) & 3]);
+    consoleSelect(&sTop);
 }
 
 static const char *pf(bool ok) { return ok ? "PASS" : "FAIL"; }
