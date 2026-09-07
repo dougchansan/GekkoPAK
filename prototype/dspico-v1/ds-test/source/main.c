@@ -312,33 +312,43 @@ static void write_diag_only(void)
     // cache, agreed with what was written. That is survivable if the shortfall
     // eats padding instead of results, so append a sentinel and filler. If the
     // sentinel is present in the file read back over USB, nothing was lost.
-    // Render into a scratch copy so the live buffer keeps growing across
-    // flushes, and terminate with a sentinel so a short write is detectable.
-    static char out[sizeof(sDiag) + 96];
-    u32 n = sDiagLen < sizeof(sDiag) ? sDiagLen : sizeof(sDiag) - 1;
-    memcpy(out, sDiag, n);
-    n += (u32)siprintf(out + n, "\n#END#\n");
+    // Write the transcript as a series of small files.
+    //
+    // Two things are known to work on this DLDI path and one is not. probe.txt
+    // (21 bytes) and wtest.txt (11 bytes) are rewritten with "w" successfully on
+    // every run. A single large diag.txt has never appeared, whether created
+    // with "w" or written in place with "r+" into a file pre-sized to 9000
+    // bytes from the host - that attempt left the file untouched, so "r+" is
+    // not supported either.
+    //
+    // Rather than keep guessing which limit applies, use only what is proven:
+    // "w" onto small files. The transcript is split into GPK_DIAG_CHUNK-byte
+    // pieces written as d00.txt, d01.txt and so on, to be concatenated in order
+    // on the host. Each chunk is independent, so a run that dies partway still
+    // leaves every completed chunk readable.
+    #define GPK_DIAG_CHUNK 384
+    static char out[GPK_DIAG_CHUNK + 8];
+    u32 total = sDiagLen < sizeof(sDiag) ? sDiagLen : sizeof(sDiag) - 1;
+    u32 chunks = (total + GPK_DIAG_CHUNK - 1) / GPK_DIAG_CHUNK;
+    if (chunks > 20)
+        chunks = 20;
 
-    // Open "r+", never "w".
-    //
-    // This DLDI write path can overwrite a file in place but cannot extend one
-    // or allocate clusters. probe.txt and wtest.txt are rewritten successfully
-    // on every run because they already exist at exactly their written size,
-    // while diag.txt - new, and larger - never appeared at all; pointing the
-    // transcript at probe.txt earlier left it stuck at its original 21 bytes.
-    //
-    // "w" truncates to zero and then has to grow, and growing is the operation
-    // that fails. "r+" writes into space the file already owns, so the file has
-    // to be pre-created at full size from the host. A failed open here means it
-    // is missing or too small, which is not recoverable from this side.
-    gpk_join(path, sizeof(path), "gekkopak/results/diag.txt");
-    FILE *d = fopen(path, "r+");
-    if (d) {
-        fwrite(out, 1, n, d);
+    for (u32 c = 0; c < chunks; c++) {
+        u32 off = c * GPK_DIAG_CHUNK;
+        u32 len = total - off;
+        if (len > GPK_DIAG_CHUNK)
+            len = GPK_DIAG_CHUNK;
+        memcpy(out, sDiag + off, len);
+
+        char tail[32];
+        siprintf(tail, "gekkopak/results/d%02lu.txt", (unsigned long)c);
+        gpk_join(path, sizeof(path), tail);
+        FILE *d = fopen(path, "w");
+        if (!d)
+            break;
+        fwrite(out, 1, len, d);
         fclose(d);
     }
-    // Not logged: this runs after every stage, and logging would grow the very
-    // buffer being written.
 }
 
 static void write_report_files(void)
