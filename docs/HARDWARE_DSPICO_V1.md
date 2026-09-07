@@ -129,6 +129,30 @@ For the RP2040 side, this is worth addressing at source rather than papering
 over from the host: the handler should hand its response to the PIO before doing
 any other work.
 
+### Iterating without swapping the card
+
+`prototype/dspico-v1/build_usb_tools.sh` builds the DSpico USB mass-storage
+application, DLDI-patched for this cartridge. Launch it from Pico Loader with a
+USB cable attached and the DSpico's microSD mounts on the host while the card
+stays in the cartridge, so a new test build can be copied and results read back
+without a physical swap.
+
+That swap, twice per iteration, was the dominant cost of this bring-up - not the
+difficulty of the faults. It is worth setting up before any further hardware
+work.
+
+It needs a pre-calico devkitARM: libtwl, which the USB platform is built on,
+redefines `REG_IME`/`REG_IE`/`REG_IF` and calls `setVectorBase()`, all of which
+collide with calico in current libnds and fail the build in `rtosIrq.c`. Tag
+`20230622` is the newest verified to work and the script pins it.
+
+A full CDC debug channel - routing the application's own log to the host - is a
+larger job. The platform is libtwl plus tinyusb on a custom ARM7 rather than a
+libnds module, so it means porting the test application to libtwl and adding
+ARM7/ARM9 IPC, and the USB path uses card commands on the same bus being
+measured. Workable by buffering results and transmitting after timing finishes,
+but a rewrite rather than an addition.
+
 ### SD result export: abandoned
 
 Results are collected by photographing the summary page. Writing them to the
@@ -137,6 +161,17 @@ run reached the card, with later writes reporting success and vanishing. Four
 explanations were investigated and all were wrong: an unflushed libfat cache,
 the path prefix, an `E4` desync of DSpico's SD state machine, and a missing
 readback. The test application therefore renders everything onto one screen.
+
+Reading the card over USB afterwards showed what was actually happening. The
+DLDI write test wrote `dldi-post-2
+`, twelve bytes, read it back, compared
+equal and reported `WRITE OK` - and the file on the card is **eleven** bytes.
+So writes do reach the card but arrive truncated, and a read-back immediately
+afterwards is served from cache and agrees with what was written. That single
+behaviour accounts for all four symptoms above: files that appear to write
+successfully, arrive wrong or not at all, and verify fine at the time. It is a
+defect in this libfat/DLDI path, not in the test application, and it is the
+reason results are collected from the screen rather than the filesystem.
 
 ### Getting a homebrew ROM to boot: what actually works
 
