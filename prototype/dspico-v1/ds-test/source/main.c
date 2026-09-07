@@ -780,6 +780,10 @@ int main(void)
     LOG("\nusb: starting CDC\n");
     gpk_status("usb: connect a cable");
     tud_init(0);  // single root hub port
+    // Assert the D+ pull-up. Without this the host never sees a device attached
+    // at all - the first attempt enumerated nothing because tud_init() alone
+    // does not connect.
+    tud_connect();
 
     u32 sent = 0;
     bool announced = false;

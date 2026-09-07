@@ -340,9 +340,17 @@ bool dcd_init(uint8_t rhport, const tusb_rhport_init_t *rh_init)
 }
 
 bool dcd_deinit(uint8_t rhport)          { (void)rhport; usb_cmd(USB_CMD_DEINIT); return true; }
-// Interrupts stay disabled: events are polled by gpk_usb_task().
-void dcd_int_enable(uint8_t rhport)      { (void)rhport; }
-void dcd_int_disable(uint8_t rhport)     { (void)rhport; }
+
+// The DSpico-side interrupt is enabled, but the ARM9 IRQ line never is.
+//
+// These are separate things: USB_CMD_INT_ENABLE tells the cartridge to generate
+// and queue USB events, which gpk_usb_task() then dequeues with EB. Leaving it
+// disabled - as an earlier version did - means the event queue stays empty and
+// enumeration never starts, because the stack is never told a SETUP arrived.
+// Not enabling the ARM9 interrupt is what keeps USB servicing outside timed
+// regions.
+void dcd_int_enable(uint8_t rhport)      { (void)rhport; usb_cmd(USB_CMD_INT_ENABLE); }
+void dcd_int_disable(uint8_t rhport)     { (void)rhport; usb_cmd(USB_CMD_INT_DISABLE); }
 void dcd_set_address(uint8_t rhport, uint8_t a) { (void)rhport; (void)a; usb_cmd(USB_CMD_BEGIN_SET_ADDR); }
 void dcd_remote_wakeup(uint8_t rhport)   { (void)rhport; usb_cmd(USB_CMD_REMOTE_WAKEUP); }
 void dcd_connect(uint8_t rhport)         { (void)rhport; usb_cmd(USB_CMD_CONNECT); }
