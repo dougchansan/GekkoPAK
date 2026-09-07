@@ -499,7 +499,38 @@ int main(void)
     LOG("--- bus probe ---\n");
     LOG("EXMEMCNT   : %04X (arm9 owns card: %s)\n",
         (unsigned)REG_EXMEMCNT, (REG_EXMEMCNT & ARM7_OWNS_CARD) ? "NO" : "yes");
-    LOG("B8 card id : %08lX\n", (unsigned long)gpk_raw_read32(0xB800000000000000ull));
+    // Capture B8 rather than only logging it: the summary page reads sProbeB8,
+    // and while this was never assigned that page showed a constant 00000000,
+    // which was mistaken for a dead cartridge more than once.
+    sProbeB8 = gpk_raw_read32(0xB800000000000000ull);
+    LOG("B8 card id : %08lX\n", (unsigned long)sProbeB8);
+
+    // Refuse to go further on a dead link.
+    //
+    // B8 is a stock game-mode command and reads C00000C2 on a healthy run.
+    // 00000000 or FFFFFFFF means the cartridge is not answering, and everything
+    // past this point then yields undriven values that look like measurements -
+    // a matrix of FFFFFFFF counters was nearly read as six failed F4 variants.
+    //
+    // The known cause is the USB-then-reset crash upstream documents. The
+    // DSpico is USB powered, so switching the console off with the cable still
+    // attached does not reset it; the cable has to come out too.
+    if (sProbeB8 == 0x00000000u || sProbeB8 == 0xFFFFFFFFu) {
+        consoleSelect(&sTop);
+        consoleClear();
+        iprintf("GEKKOPAK PHYS TEST\n\nLINK DEAD\n\n");
+        iprintf("B8 read %08lX\n", (unsigned long)sProbeB8);
+        iprintf("(healthy is C00000C2)\n\n");
+        iprintf("Cartridge not answering.\nPower cycle it:\n\n");
+        iprintf(" 1 unplug USB\n 2 console OFF\n");
+        iprintf(" 3 remove cartridge\n 4 wait a few seconds\n");
+        iprintf(" 5 reinsert, power on\n\nNo results this run.\n");
+        LOG("LINK DEAD - refusing to run\n");
+        while (pmMainLoop()) {
+            swiWaitForVBlank();
+            scanKeys();
+        }
+    }
     // E4 (GET_SD_STAT) is deliberately NOT issued any more.
     //
     // It answered 00000001 on hardware and served its purpose - it proved the
