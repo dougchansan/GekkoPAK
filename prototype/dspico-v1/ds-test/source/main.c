@@ -297,6 +297,14 @@ static void write_diag_only(void)
         return;
     }
 
+    // Flush after every stage, not once at the end.
+    //
+    // probe.txt and wtest.txt, both written early, reach the card on every run
+    // while an end-of-run write does not - the DLDI write path degrades after
+    // sustained bus traffic just as reads do. Rewriting the whole transcript
+    // after each stage means the last successful write is kept, so a run that
+    // dies late still leaves everything up to that point on the card.
+    //
     // Pad the tail before writing.
     //
     // Writes through this DLDI path arrive very slightly short: a 12-byte probe
@@ -501,6 +509,7 @@ int main(void)
     // which was mistaken for a dead cartridge more than once.
     sProbeB8 = gpk_raw_read32(0xB800000000000000ull);
     LOG("B8 card id : %08lX\n", (unsigned long)sProbeB8);
+    write_diag_only();  // flush this stage to the card
 
     // Refuse to go further on a dead link.
     //
@@ -575,6 +584,7 @@ int main(void)
     LOG("using lat r/w %lu/%lu (timeouts %lu)\n",
         (unsigned long)gpkLatencyRead, (unsigned long)gpkLatencyWrite,
         (unsigned long)gpkTimeouts);
+    write_diag_only();  // flush this stage to the card
 
     // EXEC settle sweep.
     //
@@ -608,6 +618,7 @@ int main(void)
     gpkExecSettle = settle > 4096 ? 4096 : settle;
     LOG("using settle %lu (8x margin, timeouts %lu)\n",
         (unsigned long)gpkExecSettle, (unsigned long)gpkTimeouts);
+    write_diag_only();  // flush this stage to the card
 
     // Step-by-step legacy probe. `legacy F0-F3 FAIL (00000000)` does not say
     // which step broke or why, and the GekkoPAK result codes are specific
@@ -671,6 +682,7 @@ int main(void)
                     (unsigned long)vars[i].parsed);
         }
     }
+    write_diag_only();  // flush after the F4 matrix
 
     // Run the full benchmark automatically. Collection is now a single
     // photograph of the summary page, so requiring a keypress only adds a
