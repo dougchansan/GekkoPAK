@@ -53,6 +53,26 @@ static void gpk_log(const char *fmt, ...)
 
 #define LOG(...) gpk_log(__VA_ARGS__)
 
+// Live status line, pinned to the bottom of the top screen.
+//
+// A run does a lot of bus work with nothing to show for it until the summary is
+// drawn at the end, which is indistinguishable from a hang. This reports the
+// stage in progress so it is visibly alive, and so a run that does lock up
+// leaves the name of the stage it died in on screen.
+static void gpk_status(const char *fmt, ...)
+{
+    char line[40];
+    va_list ap;
+    va_start(ap, fmt);
+    vsniprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+
+    consoleSelect(&sTop);
+    // Row 22, column 0, then pad to the full width so the previous stage name
+    // cannot show through a shorter one.
+    iprintf("\x1b[22;0H>> %-28s", line);
+}
+
 static const char *pf(bool ok) { return ok ? "PASS" : "FAIL"; }
 
 static const char *layer_name(int layer)
@@ -443,6 +463,7 @@ static void run(bool full)
     else
         gpk_run_quick(&sReport);
     sHaveReport = true;
+    gpk_status("done");
     draw_status();
     log_details();
     LOG("done: %s\n", pf(sReport.overall_ok));
@@ -521,6 +542,7 @@ int main(void)
     //   F2 arg0     - GekkoPAK. If B8 and E4 answer but this does not, the
     //                 fault is in the overlay's F0-F5 handlers, not the bus.
     REG_EXMEMCNT &= ~ARM7_OWNS_CARD;
+    gpk_status("bus probe");
     LOG("--- bus probe ---\n");
     LOG("EXMEMCNT   : %04X (arm9 owns card: %s)\n",
         (unsigned)REG_EXMEMCNT, (REG_EXMEMCNT & ARM7_OWNS_CARD) ? "NO" : "yes");
@@ -582,10 +604,12 @@ int main(void)
     // is a real property of this cartridge and it bounds the achievable
     // transaction rate, so the benchmark needs it either way.
     static const u32 kLatencies[] = { 4, 8, 12, 16, 24, 32, 48, 63 };
+    gpk_status("latency sweep");
     LOG("F2 read latency sweep (of 32):\n");
     u32 chosen = 0;
     for (u32 i = 0; i < sizeof(kLatencies) / sizeof(kLatencies[0]); i++) {
         gpkLatencyRead = kLatencies[i];
+        gpk_status("latency sweep: %lu", (unsigned long)kLatencies[i]);
         gpk_write_reg(GPK_REG_ARG0, 0xA5A5A5A5u);
         u32 ok = 0;
         for (u32 n = 0; n < 32; n++) {
@@ -615,10 +639,12 @@ int main(void)
     // it actually needs instead of picking a number; the answer bounds the cost
     // of every EXEC-based operation and belongs in the results.
     static const u32 kSettles[] = { 0, 16, 64, 256, 1024 };
+    gpk_status("EXEC settle sweep");
     LOG("EXEC settle sweep (HELLO, of 16):\n");
     u32 settle = 0;
     for (u32 i = 0; i < sizeof(kSettles) / sizeof(kSettles[0]); i++) {
         gpkExecSettle = kSettles[i];
+        gpk_status("settle sweep: %lu", (unsigned long)kSettles[i]);
         u32 ok = 0;
         for (u32 n = 0; n < 16; n++) {
             u32 proto = 0;
@@ -644,6 +670,7 @@ int main(void)
     // which step broke or why, and the GekkoPAK result codes are specific
     // (2=BadHandle 3=NoMemory 4=NotReady 5=BadDescriptor 7=QueueFull), so print
     // them rather than infer.
+    gpk_status("legacy probe");
     LOG("--- legacy probe ---\n");
     gpk_write_reg(GPK_REG_ARG0, 0xDEADBEEFu);
     LOG("reg rt     : %08lX\n", (unsigned long)gpk_read_reg(GPK_REG_ARG0));
@@ -691,6 +718,7 @@ int main(void)
         gpk_f4_variant_t vars[GPK_F4_VARIANTS];
         memset(vars, 0, sizeof(vars));
         u32 n = gpk_f4_matrix(vars);
+        gpk_status("F4 matrix");
         LOG("--- F4 matrix ---\n");
         if (n == 0) {
             LOG("alloc failed; no variants run\n");
