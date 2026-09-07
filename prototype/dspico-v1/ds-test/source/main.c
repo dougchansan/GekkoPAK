@@ -130,6 +130,29 @@ static void fmt_mib(u32 kib_per_s, char *out, size_t n)
     (void)n;
 }
 
+// Action menu. One build, many experiments: each of these was previously a
+// rebuild, a copy and a card swap away.
+static void draw_menu(void)
+{
+    consoleSelect(&sTop);
+    consoleClear();
+    iprintf("GEKKOPAK PHYS TEST DSpico\n\n");
+    iprintf("B8 %08lX  timeouts %lu\n",
+            (unsigned long)sProbeB8, (unsigned long)gpkTimeouts);
+    iprintf("lat r/w %lu/%lu settle %lu\n\n",
+            (unsigned long)gpkLatencyRead, (unsigned long)gpkLatencyWrite,
+            (unsigned long)gpkExecSettle);
+    iprintf("A  quick test\n");
+    iprintf("X  full benchmark\n");
+    iprintf("Y  F4 variant matrix\n");
+    iprintf("B  re-probe link\n");
+    iprintf("L  cycle write latency\n");
+    iprintf("R  cycle exec settle\n");
+    iprintf("START  rerun last\n");
+    iprintf("SELECT save to SD\n\n");
+    iprintf("USB: plug in for results\n");
+}
+
 static void draw_status(void)
 {
     consoleSelect(&sTop);
@@ -766,10 +789,11 @@ int main(void)
     }
     write_diag_only();  // flush after the F4 matrix
 
-    // Run the full benchmark automatically. Collection is now a single
-    // photograph of the summary page, so requiring a keypress only adds a
-    // round trip.
-    run(true);
+    // No automatic benchmark. Actions are bound to buttons instead, so one
+    // build can run many experiments without a rebuild, a copy and a card swap
+    // for each - that cycle, not the difficulty of the faults, has been the
+    // dominant cost of this bring-up.
+    draw_menu();
 
     // Bring USB up only now, after every measurement is finished.
     //
@@ -827,13 +851,54 @@ int main(void)
 
         scanKeys();
         u32 keys = keysDown();
-        if (keys & KEY_A)
-            run(false);
-        else if (keys & KEY_X)
-            run(true);
-        else if (keys & KEY_START)
+
+        if (keys & KEY_A) {
+            run(false);                       // quick: discovery, legacy, block
+        } else if (keys & KEY_X) {
+            run(true);                        // full benchmark with timings
+        } else if (keys & KEY_Y) {
+            // F4 variant matrix on demand.
+            gpk_status("F4 matrix");
+            gpk_f4_variant_t vars[GPK_F4_VARIANTS];
+            memset(vars, 0, sizeof(vars));
+            u32 n = gpk_f4_matrix(vars);
+            LOG("--- F4 matrix ---\n");
+            if (n == 0) {
+                LOG("link down; not run\n");
+            } else {
+                for (u32 i = 0; i < n; i++)
+                    LOG("%-11s d%lu e%lu a%lu c%lu p%lu\n", vars[i].name,
+                        (unsigned long)vars[i].completions, (unsigned long)vars[i].enter,
+                        (unsigned long)vars[i].accepted, (unsigned long)vars[i].complete,
+                        (unsigned long)vars[i].parsed);
+            }
+            gpk_status("F4 matrix done");
+        } else if (keys & KEY_B) {
+            // Re-probe the link without disturbing anything else. Cheap, and
+            // the first thing worth knowing when a run looks wrong.
+            u32 id = gpk_raw_read32(0xB800000000000000ull);
+            u32 proto = 0;
+            u32 res = gpk_hello(&proto, NULL, NULL, NULL);
+            LOG("B8 %08lX hello r%lu proto %08lX\n",
+                (unsigned long)id, (unsigned long)res, (unsigned long)proto);
+            gpk_status("probe: B8 %08lX", (unsigned long)id);
+        } else if (keys & KEY_L) {
+            // Step write latency: the parameter most likely to matter for F4,
+            // and previously only changeable by rebuilding.
+            static const u32 kLat[] = { 8, 16, 32, 63 };
+            static u32 li = 0;
+            li = (li + 1) % 4;
+            gpkLatencyWrite = kLat[li];
+            gpk_status("write latency %lu", (unsigned long)gpkLatencyWrite);
+        } else if (keys & KEY_R) {
+            static const u32 kSet[] = { 16, 128, 512, 2048 };
+            static u32 si = 0;
+            si = (si + 1) % 4;
+            gpkExecSettle = kSet[si];
+            gpk_status("exec settle %lu", (unsigned long)gpkExecSettle);
+        } else if (keys & KEY_START) {
             run(sFullRun);
-        else if (keys & KEY_SELECT) {
+        } else if (keys & KEY_SELECT) {
             // Results are saved automatically after every run; SELECT just
             // forces another write.
             if (sHaveReport)
