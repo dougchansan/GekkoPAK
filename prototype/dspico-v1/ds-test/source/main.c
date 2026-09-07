@@ -625,6 +625,25 @@ int main(void)
     // Repeat the write test now that GekkoPAK commands have been issued.
     gpk_dldi_write_test("post", 2);
 
+    // F4 variant matrix: six configurations in one boot, so a round trip tests
+    // six hypotheses instead of one. Printed on the log screen; the summary page
+    // stays reserved for the benchmark.
+    {
+        gpk_f4_variant_t vars[GPK_F4_VARIANTS];
+        memset(vars, 0, sizeof(vars));
+        u32 n = gpk_f4_matrix(vars);
+        LOG("--- F4 matrix ---\n");
+        if (n == 0) {
+            LOG("alloc failed; no variants run\n");
+        } else {
+            for (u32 i = 0; i < n; i++)
+                LOG("%-11s d%lu e%lu a%lu c%lu p%lu\n", vars[i].name,
+                    (unsigned long)vars[i].completions, (unsigned long)vars[i].enter,
+                    (unsigned long)vars[i].accepted, (unsigned long)vars[i].complete,
+                    (unsigned long)vars[i].parsed);
+        }
+    }
+
     // Run the full benchmark automatically. Collection is now a single
     // photograph of the summary page, so requiring a keypress only adds a
     // round trip.

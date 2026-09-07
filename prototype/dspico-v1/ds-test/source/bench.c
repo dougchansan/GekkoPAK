@@ -382,6 +382,79 @@ static void gpk_compute_bandwidth(gpk_report_t *r)
             (u32)((512ull * 1000000ull) / ((u64)r->f5_latency.median_us * 1024ull));
 }
 
+// Try several F4 variants in a single boot.
+//
+// Each previous hardware round trip tested exactly one guess, which is far too
+// slow when a round trip costs a card swap and a photograph. These variants
+// differ in the things actually in doubt: the meaningful-byte count, whether a
+// primer precedes the write, whether the payload is inline or pre-uploaded, and
+// the write latency. The RP2040 counters are sampled either side of each
+// attempt so every variant reports its own deltas.
+u32 gpk_f4_matrix(gpk_f4_variant_t *out)
+{
+    u32 handle = 0, size = 0;
+    handle = gpk_alloc(sizeof(gpkTestPattern), &size);
+    if (handle == 0)
+        return 0;
+    (void)gpk_upload(handle, gpkTestPattern, sizeof(gpkTestPattern));
+
+    static const char *kNames[GPK_F4_VARIANTS] = {
+        "80B inline", "512B inline", "64B noinl",
+        "primed", "lat32", "lat63",
+    };
+
+    for (u32 v = 0; v < GPK_F4_VARIANTS; v++) {
+        gpk_drain_completions();
+        u32 e0 = gpk_read_reg(0xF0), a0 = gpk_read_reg(0xF1);
+        u32 c0 = gpk_read_reg(0xF2), p0 = gpk_read_reg(0xF3);
+        u32 savedLatency = gpkLatencyWrite;
+
+        memset(sBlock, 0, sizeof(sBlock));
+        u32 meaningful = GPK_DESCRIPTOR_BYTES + sizeof(gpkTestPattern);
+        u32 flags = GPK_FLAG_INLINE_INPUT;
+
+        switch (v) {
+        case 1: meaningful = GPK_BLOCK_BYTES; break;      // declare the whole block
+        case 2: meaningful = GPK_DESCRIPTOR_BYTES;        // no inline payload at all
+                flags = 0; break;
+        case 4: gpkLatencyWrite = 32; break;              // more write latency
+        case 5: gpkLatencyWrite = 63; break;              // maximum write latency
+        default: break;
+        }
+
+        gpk_build_descriptor((gpk_descriptor_t *)sBlock, 200 + v, handle,
+                             sizeof(gpkTestPattern), flags, 100000);
+        if (flags & GPK_FLAG_INLINE_INPUT)
+            memcpy(sBlock + GPK_DESCRIPTOR_BYTES, gpkTestPattern, sizeof(gpkTestPattern));
+
+        if (v == 3) {
+            memset(sPrimeBlock, 0, sizeof(sPrimeBlock));
+            gpk_write_block(sPrimeBlock, GPK_BLOCK_BYTES);
+        }
+
+        gpk_write_block(sBlock, meaningful);
+
+        u32 depth = 0;
+        for (int i = 0; i < 8 && depth == 0; i++) {
+            depth = gpk_event_depth();
+            if (depth == 0)
+                swiDelay(500);
+        }
+
+        out[v].name        = kNames[v];
+        out[v].completions = depth;
+        out[v].enter       = gpk_read_reg(0xF0) - e0;
+        out[v].accepted    = gpk_read_reg(0xF1) - a0;
+        out[v].complete    = gpk_read_reg(0xF2) - c0;
+        out[v].parsed      = gpk_read_reg(0xF3) - p0;
+        gpkLatencyWrite    = savedLatency;
+    }
+
+    gpk_write_reg(GPK_REG_ARG0, handle);
+    gpk_exec(GPK_CMD_FREE);
+    return GPK_F4_VARIANTS;
+}
+
 bool gpk_run_quick(gpk_report_t *r)
 {
     memset(r, 0, sizeof(*r));

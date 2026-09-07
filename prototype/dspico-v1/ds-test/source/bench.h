@@ -69,6 +69,18 @@ typedef struct {
 } gpk_report_t;
 
 void gpk_stats_compute(u32 *samples, u32 count, gpk_stats_t *out);
+// Run several F4 variants in one boot and report which, if any, queues a
+// completion. One hypothesis per hardware round trip is far too slow when each
+// costs a card swap and a photograph.
+typedef struct {
+    const char *name;
+    u32 completions;   // event depth after the attempt
+    u32 enter, accepted, complete, parsed;  // RP2040 counters, delta for this variant
+} gpk_f4_variant_t;
+
+#define GPK_F4_VARIANTS 6
+u32 gpk_f4_matrix(gpk_f4_variant_t *out);
+
 bool gpk_run_quick(gpk_report_t *r);
 bool gpk_run_full(gpk_report_t *r);
 
