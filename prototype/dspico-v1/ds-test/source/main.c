@@ -14,6 +14,11 @@
 #include <unistd.h>
 
 #include "bench.h"
+#include "tusb.h"
+
+// Event pump for the DSpico device controller, in usb/dcd_dspico.c. USB is card
+// traffic, so this is only ever called outside a timed region.
+void gpk_usb_task(void);
 
 static PrintConsole sTop;
 static PrintConsole sBottom;
@@ -766,6 +771,19 @@ int main(void)
     // round trip.
     run(true);
 
+    // Bring USB up only now, after every measurement is finished.
+    //
+    // USB on this cartridge is card traffic - E8/E9/EA/EB are card commands on
+    // the same bus as F0-F5 - so servicing it during a benchmark would corrupt
+    // the timings it exists to report. Starting it here keeps the measurement
+    // clean and costs nothing, since the transcript is complete by this point.
+    LOG("\nusb: starting CDC\n");
+    gpk_status("usb: connect a cable");
+    tud_init(0);  // single root hub port
+
+    u32 sent = 0;
+    bool announced = false;
+
     bool marked = false;
     while (pmMainLoop()) {
         swiWaitForVBlank();
@@ -775,6 +793,34 @@ int main(void)
             LOG("boot: reached main loop\n");
             marked = true;
         }
+        // Pump USB every frame, and stream the transcript once a host has
+        // opened the port. Sent in small pieces so a full CDC FIFO simply
+        // resumes on the next frame rather than blocking the loop.
+        gpk_usb_task();
+        tud_task();
+
+        if (tud_cdc_connected()) {
+            if (!announced) {
+                gpk_status("usb: host connected");
+                announced = true;
+            }
+            if (sent < sDiagLen) {
+                u32 chunk = sDiagLen - sent;
+                u32 space = tud_cdc_write_available();
+                if (chunk > space)
+                    chunk = space;
+                if (chunk > 64)
+                    chunk = 64;
+                if (chunk) {
+                    sent += (u32)tud_cdc_write(sDiag + sent, chunk);
+                    tud_cdc_write_flush();
+                }
+            }
+        } else {
+            announced = false;
+            sent = 0;
+        }
+
         scanKeys();
         u32 keys = keysDown();
         if (keys & KEY_A)

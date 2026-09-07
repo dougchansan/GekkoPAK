@@ -297,6 +297,33 @@ void gpk_usb_task(void)
     }
 }
 
+void gpk_usb_task(void);
+
+// ---------------------------------------------------------------------------
+// Hooks tinyusb expects from the port
+// ---------------------------------------------------------------------------
+
+// Millisecond time source, used for stack timeouts. Derived from the cascaded
+// hardware timers the benchmark already runs at 33.513982 MHz; it returns 0
+// until those are started, which is harmless here because USB is only brought
+// up after the transport has initialised them.
+extern uint32_t gpk_ticks(void);
+
+uint32_t tusb_time_millis_api(void)
+{
+    return gpk_ticks() / 33514u;
+}
+
+// Interrupt entry point. This port is polled rather than interrupt-driven -
+// servicing USB from an IRQ would let card traffic land in the middle of a
+// timed region - so this just runs the same pump, and nothing enables the
+// interrupt in the first place.
+void dcd_int_handler(uint8_t rhport)
+{
+    (void)rhport;
+    gpk_usb_task();
+}
+
 // ---------------------------------------------------------------------------
 // Device API
 // ---------------------------------------------------------------------------

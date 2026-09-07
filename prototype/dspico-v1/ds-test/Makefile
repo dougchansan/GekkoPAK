@@ -11,8 +11,11 @@ include $(DEVKITARM)/ds_rules
 #---------------------------------------------------------------------------------
 TARGET   := gekkopak_test
 BUILD    := build
-SOURCES  := source
-INCLUDES := include
+# usb/ holds the tinyusb CDC results channel: the DSpico device controller is
+# driven over card commands from the ARM9, so no ARM7 or RTOS is involved.
+# Only the device-side tinyusb sources are listed; the host stack is not built.
+SOURCES  := source usb             usb/tinyusb             usb/tinyusb/common             usb/tinyusb/device             usb/tinyusb/class/cdc
+INCLUDES := include usb usb/tinyusb
 DATA     :=
 GRAPHICS :=
 
