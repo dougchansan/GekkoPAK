@@ -296,34 +296,31 @@ static void write_diag_only(void)
         LOG("SD not writable; no diag\n");
         return;
     }
-    // Write to probe.txt, and read it back afterwards.
+
+    // Pad the tail before writing.
     //
-    // This is empirical rather than principled. probe.txt is the only file that
-    // has ever survived to the card: it is written in gpk_find_prefix as
-    // fopen(w) / write / fclose / fopen(r) / read / fclose, and it persists on
-    // every run. Files written the same way minus the readback - diag.txt,
-    // latest.txt, latest.csv - are lost every time, even though fopen, fwrite
-    // and fclose all report success. Three explanations for that have already
-    // been wrong (unflushed cache, path prefix, an E4 desync), so stop
-    // theorising about libfat and copy the sequence that demonstrably works.
-    gpk_join(path, sizeof(path), "gekkopak/results/probe.txt");
+    // Writes through this DLDI path arrive very slightly short: a 12-byte probe
+    // landed as 11 bytes on the card while the verifying read, served from
+    // cache, agreed with what was written. That is survivable if the shortfall
+    // eats padding instead of results, so append a sentinel and filler. If the
+    // sentinel is present in the file read back over USB, nothing was lost.
+    if (sDiagLen + 80 < sizeof(sDiag)) {
+        const char *tail = "\n#END#";
+        u32 n = strlen(tail);
+        memcpy(sDiag + sDiagLen, tail, n);
+        sDiagLen += n;
+        for (u32 i = 0; i < 64; i++)
+            sDiag[sDiagLen++] = '.';
+        sDiag[sDiagLen] = 0;
+    }
+
+    gpk_join(path, sizeof(path), "gekkopak/results/diag.txt");
     FILE *d = fopen(path, "w");
     if (d) {
         fwrite(sDiag, 1, sDiagLen, d);
         fclose(d);
     }
-
-    u32 back = 0;
-    FILE *v = fopen(path, "r");
-    if (v) {
-        char buf[64];
-        size_t n;
-        while ((n = fread(buf, 1, sizeof(buf), v)) > 0)
-            back += n;
-        fclose(v);
-    }
-    LOG("diag %s %lu/%lu\n", d ? "w" : "FAIL",
-        (unsigned long)back, (unsigned long)sDiagLen);
+    LOG("diag %s %lu\n", d ? "saved" : "FAILED", (unsigned long)sDiagLen);
 }
 
 static void write_report_files(void)
@@ -421,9 +418,9 @@ static void run(bool full)
     draw_status();
     log_details();
     LOG("done: %s\n", pf(sReport.overall_ok));
-    // Autosave. The transcript and CSV are the point of the exercise, and
-    // depending on someone remembering a keypress loses runs.
-    write_report_files();
+    // Autosave at the end, after all bus traffic. Read it back over USB with
+    // the mass-storage app so a result never needs photographing.
+    write_diag_only();
 }
 
 // Early boot progress marker.
