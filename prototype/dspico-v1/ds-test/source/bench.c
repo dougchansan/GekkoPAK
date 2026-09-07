@@ -197,6 +197,17 @@ static bool gpk_stage_block_roundtrip(gpk_report_t *r)
 
     memset(sReadBlock, 0, sizeof(sReadBlock));
     gpk_read_block(sReadBlock, GPK_COMPLETION_BYTES);
+    // Dump the head of the completion block.
+    //
+    // F4 now works - event depth reaches 1 and the RP2040 reports descriptors
+    // parsed - but the GKC1 record does not validate and checksum reads
+    // 01000000 instead of F269B734. The legacy path hashes the same bytes
+    // correctly, so the data is arriving misaligned rather than wrong, and
+    // 0x01000000 looks like the version field (value 1) sitting a few bytes off.
+    // Print the raw head rather than infer the shift: GKC1 should start
+    // 47 4B 43 31 01 00 00 00.
+    memcpy(r->f5_head, sReadBlock, sizeof(r->f5_head));
+
     const gpk_completion_t *c = (const gpk_completion_t *)sReadBlock;
     r->f5_ok = (c->magic == GPK_COMP_MAGIC) &&
                (c->version == GPK_BLOCK_VERSION) &&

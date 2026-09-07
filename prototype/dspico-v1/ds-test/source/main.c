@@ -246,6 +246,16 @@ static void log_details(void)
     LOG("event depth: %lu\n", (unsigned long)r->event_depth);
     LOG("checksum   : %08lX exp %08lX\n",
         (unsigned long)r->checksum, (unsigned long)GPK_EXPECTED_CHECKSUM);
+    // Raw head of the F5 completion block. F4 now works, but the GKC1 record
+    // does not validate, so print the bytes rather than infer the layout.
+    // A correct record starts 47 4B 43 31 01 00 00 00 ('GKC1', version 1).
+    LOG("F5 head:");
+    for (u32 i = 0; i < 16; i++)
+        LOG(" %02X", (unsigned)r->f5_head[i]);
+    LOG("\nF5 +16 :");
+    for (u32 i = 16; i < 32; i++)
+        LOG(" %02X", (unsigned)r->f5_head[i]);
+    LOG("\n");
     if (!sFullRun)
         return;
     LOG("cmd  min/med/p95/max %lu/%lu/%lu/%lu\n",

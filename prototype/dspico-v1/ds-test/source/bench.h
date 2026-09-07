@@ -53,6 +53,9 @@ typedef struct {
     u32   f4_enter, f4_accepted, f4_complete, f4_parsed;
     // Allocation handle obtained by the block stage; 0 means it never got that far.
     u32   block_handle;
+    // First 32 bytes of the F5 completion block, so the record layout can be
+    // inspected rather than inferred. GKC1 should begin 47 4B 43 31 01 00 00 00.
+    u8    f5_head[32];
     gpk_stats_t cmd_latency;
     gpk_stats_t f4_latency;
     gpk_stats_t f5_latency;

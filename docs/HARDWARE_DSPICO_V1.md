@@ -31,8 +31,9 @@ says so explicitly.
 | Bus, ROMCTRL, command byte order | **PASS (measured)** |
 | GekkoPAK protocol layer (HELLO) | **PASS (measured)** |
 | Legacy F0-F3 control path + checksum | **PASS (measured)** |
-| F4 block write reaches the cartridge and parses | **PASS (measured)** |
-| F5 completion readback | blocked on read reliability |
+| F4 block write, all variants | **PASS (measured)** |
+| F5 completion readback | **FAIL - record does not validate** |
+| Benchmark timings | blocked on F5 |
 | Benchmark timings | blocked on F4/F5 |
 
 ### Measured on hardware
@@ -58,36 +59,39 @@ with F3, committed with `UPLOAD`, and hashed by the RP2040 with FNV-1a to
 from the `0x899bd1de` a word-swap would produce. **The wire byte order is now
 confirmed end to end on silicon**, not merely derived from the source.
 
-### F4 block write: the transport works; reading the answer does not
+### F4 block transport works; F5 readback does not
 
-Instrumenting the RP2040 settled this, and the earlier conclusion in this
-document was wrong. Counters were added to the overlay - `sF4Enter`,
-`sF4Accepted`, `sF4Complete`, `sF4Parsed`, readable over F2 at `0xF0`-`0xF3` -
-and one matrix row came back
+With reads made self-validating and the actions bound to buttons, the F4 variant
+matrix runs cleanly and every variant queues a completion:
 
 ```
-primed   d FFFFFFFF   e1 a4 c4 p2
+80B inline   d1 e9  a9  c9  p6
+512B inline  d1 e10 a10 c10 p7
+64B noinl    d1 e11 a11 c11 p8
+primed       d1 e13 a13 c13 p9
 ```
 
-`c4` and `p2` are the important values. The F4 payload completed four times and
-`processDescriptorBatch` accepted two descriptors, so **the console-to-cartridge
-512-byte transfer does deliver data and the descriptor is parsed**. On the same
-row the event-depth read returned `FFFFFFFF`, undriven.
+`d1` is the completion queue depth after each attempt, and the RP2040 counters
+climb monotonically - entered, accepted, payload complete, descriptor parsed. A
+quick test in the same session reports `event depth: 1`, `F4 PASS`, `blkh 2`,
+`F4cnt e8 a8 c8 p5`, and the legacy path passing with `F269B734`.
 
-So F4 was never broken. Every "event depth 0" result was a lost *read* of the
-completion count, not a lost write, and the same dropped-transaction behaviour
-described below was the cause throughout. Several rounds were spent varying the
+So the 512-byte console-to-cartridge transfer, the descriptor ABI and the
+completion queue all work on hardware. Several rounds were spent varying the
 write - meaningful-byte count, inline against pre-uploaded payload, primer
-blocks, write latency from 8 to 63 - when the write had been working all along.
+blocks, latency 8 through 63 - when the write had been correct throughout and
+the failures were lost *reads* of the result.
 
-Two lessons worth keeping. Instrumenting the far side would have cost one flash
-cycle and was worth doing far earlier: from the host, a command that never
-arrives, one that is rejected, one whose payload never completes and one whose
-answer is lost are indistinguishable, and four different fixes were attempted
-against a single symptom. And the counters themselves had to be read carefully -
-an early version reported deltas, so an undriven read wrapped to about 4e9 and
-looked like a large count, and another version read them past an early return so
-a stage that never ran reported the same zeros as a command that never arrived.
+What remains is narrow. F5 returns a block, but the `GKC1` record does not
+validate and its checksum field reads `01000000` where `F269B734` is expected.
+The legacy path hashes the same bytes correctly, so the hash is right and the
+data is arriving misaligned rather than wrong; `0x01000000` looks like the
+version field, value 1, sitting a few bytes out of place. The test now dumps the
+first 32 bytes of the block so the layout can be read instead of inferred - a
+correct record begins `47 4B 43 31 01 00 00 00`.
+
+The two highest-latency matrix rows (`lat32`, `lat63`) still return `FFFFFFFF`
+counters, so those settings break the readback entirely rather than helping.
 ### The first transaction after a pause is dropped
 
 The single most important hardware behaviour found, and it is not in any
