@@ -795,22 +795,19 @@ int main(void)
     // dominant cost of this bring-up.
     draw_menu();
 
-    // Bring USB up only now, after every measurement is finished.
+    // USB is NOT started here. It is opt-in, on SELECT.
     //
-    // USB on this cartridge is card traffic - E8/E9/EA/EB are card commands on
-    // the same bus as F0-F5 - so servicing it during a benchmark would corrupt
-    // the timings it exists to report. Starting it here keeps the measurement
-    // clean and costs nothing, since the transcript is complete by this point.
-    LOG("\nusb: starting CDC\n");
-    gpk_status("usb: connect a cable");
-    tud_init(0);  // single root hub port
-    // Assert the D+ pull-up. Without this the host never sees a device attached
-    // at all - the first attempt enumerated nothing because tud_init() alone
-    // does not connect.
-    tud_connect();
-
+    // Starting it at boot wedged the cartridge: B8 read FFFFFFFF, where the
+    // previous build - which brought USB up only after the benchmark - read
+    // C00000C2. USB on this cartridge is card traffic: tud_init() issues E8
+    // commands and gpk_usb_task() polls EB every frame, so leaving it running
+    // underneath the transport corrupts the bus being tested.
+    //
+    // Removing the automatic benchmark is what exposed this. The USB init had
+    // been sequenced after it, and with the run gone it moved to startup.
     u32 sent = 0;
     bool announced = false;
+    bool usbStarted = false;
 
     bool marked = false;
     while (pmMainLoop()) {
@@ -824,10 +821,12 @@ int main(void)
         // Pump USB every frame, and stream the transcript once a host has
         // opened the port. Sent in small pieces so a full CDC FIFO simply
         // resumes on the next frame rather than blocking the loop.
-        gpk_usb_task();
-        tud_task();
+        if (usbStarted) {
+            gpk_usb_task();
+            tud_task();
+        }
 
-        if (tud_cdc_connected()) {
+        if (usbStarted && tud_cdc_connected()) {
             if (!announced) {
                 gpk_status("usb: host connected");
                 announced = true;
@@ -844,7 +843,7 @@ int main(void)
                     tud_cdc_write_flush();
                 }
             }
-        } else {
+        } else if (usbStarted) {
             announced = false;
             sent = 0;
         }
@@ -899,12 +898,17 @@ int main(void)
         } else if (keys & KEY_START) {
             run(sFullRun);
         } else if (keys & KEY_SELECT) {
-            // Results are saved automatically after every run; SELECT just
-            // forces another write.
-            if (sHaveReport)
-                write_report_files();
-            else
-                LOG("no report yet\n");
+            // Start USB on demand, after the measurements are done. Starting it
+            // any earlier runs card traffic underneath the transport under test.
+            if (!usbStarted) {
+                LOG("\nusb: starting CDC\n");
+                gpk_status("usb: connect a cable");
+                tud_init(0);
+                tud_connect();   // tud_init alone does not assert the pull-up
+                usbStarted = true;
+            } else {
+                LOG("usb: already running\n");
+            }
         }
     }
     return 0;
