@@ -312,23 +312,33 @@ static void write_diag_only(void)
     // cache, agreed with what was written. That is survivable if the shortfall
     // eats padding instead of results, so append a sentinel and filler. If the
     // sentinel is present in the file read back over USB, nothing was lost.
-    if (sDiagLen + 80 < sizeof(sDiag)) {
-        const char *tail = "\n#END#";
-        u32 n = strlen(tail);
-        memcpy(sDiag + sDiagLen, tail, n);
-        sDiagLen += n;
-        for (u32 i = 0; i < 64; i++)
-            sDiag[sDiagLen++] = '.';
-        sDiag[sDiagLen] = 0;
-    }
+    // Render into a scratch copy so the live buffer keeps growing across
+    // flushes, and terminate with a sentinel so a short write is detectable.
+    static char out[sizeof(sDiag) + 96];
+    u32 n = sDiagLen < sizeof(sDiag) ? sDiagLen : sizeof(sDiag) - 1;
+    memcpy(out, sDiag, n);
+    n += (u32)siprintf(out + n, "\n#END#\n");
 
+    // Open "r+", never "w".
+    //
+    // This DLDI write path can overwrite a file in place but cannot extend one
+    // or allocate clusters. probe.txt and wtest.txt are rewritten successfully
+    // on every run because they already exist at exactly their written size,
+    // while diag.txt - new, and larger - never appeared at all; pointing the
+    // transcript at probe.txt earlier left it stuck at its original 21 bytes.
+    //
+    // "w" truncates to zero and then has to grow, and growing is the operation
+    // that fails. "r+" writes into space the file already owns, so the file has
+    // to be pre-created at full size from the host. A failed open here means it
+    // is missing or too small, which is not recoverable from this side.
     gpk_join(path, sizeof(path), "gekkopak/results/diag.txt");
-    FILE *d = fopen(path, "w");
+    FILE *d = fopen(path, "r+");
     if (d) {
-        fwrite(sDiag, 1, sDiagLen, d);
+        fwrite(out, 1, n, d);
         fclose(d);
     }
-    LOG("diag %s %lu\n", d ? "saved" : "FAILED", (unsigned long)sDiagLen);
+    // Not logged: this runs after every stage, and logging would grow the very
+    // buffer being written.
 }
 
 static void write_report_files(void)
