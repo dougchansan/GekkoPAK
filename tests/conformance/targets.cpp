@@ -94,6 +94,7 @@ bool CoreIssue(const std::uint8_t command[8], const std::uint8_t* in, std::size_
 std::uint8_t gRegPool[kConformancePoolBytes];
 std::uint8_t gRegPage[ntr_transport::kRegisterPageSize];
 Device gRegCore;
+ntr_transport::RegisterTransport gRegTransport;
 
 void RegReset() {
     std::memset(gRegPage, 0, sizeof(gRegPage));
@@ -102,45 +103,62 @@ void RegReset() {
     config.pool_bytes = kConformancePoolBytes;
     config.reported_local_bytes = kConformancePoolBytes;
     gRegCore.Reset(config);
-    ntr_transport::Store32(gRegPage, ntr_transport::kRegRomCnt, ntr_transport::kCardResetHigh);
+    gRegTransport.Reset(gRegPage);
 }
 
+// Drives a full transaction the way the ARM guest does: stage the command,
+// program the block-size field the opcode requires, then move the data phase
+// through the FIFO a word at a time, acknowledging each one.
 bool RegIssue(const std::uint8_t command[8], const std::uint8_t* in, std::size_t in_len,
               std::uint8_t* out, std::size_t out_len) {
     if (out != nullptr) {
         std::memset(out, 0, out_len);
     }
-    if (in != nullptr) {
-        if (in_len > gp::kBlockBytes) {
-            return false;
-        }
-        std::memset(gRegPage + ntr_transport::kRegBlockTx, 0, gp::kBlockBytes);
-        std::memcpy(gRegPage + ntr_transport::kRegBlockTx, in, in_len);
+
+    const ntr_transport::ExpectedPhase phase = ntr_transport::PhaseForOpcode(command[0]);
+    const std::size_t words = phase.bytes / 4u;
+    if (phase.direction == ntr_transport::PhaseDirection::CartToConsole &&
+        (out == nullptr || out_len < phase.bytes)) {
+        return false;
+    }
+    if (phase.direction == ntr_transport::PhaseDirection::ConsoleToCart &&
+        (in == nullptr || in_len < phase.bytes)) {
+        return false;
     }
 
     std::memcpy(gRegPage + ntr_transport::kRegCommand, command, gp::kCommandBytes);
     ntr_transport::Store32(gRegPage, ntr_transport::kRegRomCnt,
                            ntr_transport::kCardResetHigh | ntr_transport::kCardActivate |
-                               (command[0] == gp::kWireReadReg ? ntr_transport::kCardBlock4 : 0u));
-    if (!ntr_transport::Tick(gRegCore, gRegPage)) {
-        return false;
-    }
+                               phase.block_field);
 
-    if (out == nullptr) {
-        return true;
-    }
-    if (command[0] == gp::kWireReadBlock) {
-        if (out_len < gp::kBlockBytes) {
-            return false;
+    std::size_t word = 0;
+    // Bounded so a transport bug fails the test instead of hanging it.
+    for (std::size_t guard = 0; guard < 4u * (words + 8u); ++guard) {
+        gRegTransport.Tick(gRegCore, gRegPage);
+        const std::uint32_t romcnt = ntr_transport::Load32(gRegPage, ntr_transport::kRegRomCnt);
+        if ((romcnt & ntr_transport::kCardActivate) == 0) {
+            return word == words;
         }
-        std::memcpy(out, gRegPage + ntr_transport::kRegBlockRx, gp::kBlockBytes);
-        return true;
+        if ((romcnt & ntr_transport::kCardDataReady) == 0) {
+            continue;
+        }
+        if (word >= words) {
+            return false; // more words offered than the block size declared
+        }
+        if (phase.direction == ntr_transport::PhaseDirection::CartToConsole) {
+            const std::uint32_t value =
+                ntr_transport::Load32(gRegPage, ntr_transport::kRegFifo);
+            std::memcpy(out + word * 4u, &value, sizeof(value));
+        } else {
+            std::uint32_t value = 0;
+            std::memcpy(&value, in + word * 4u, sizeof(value));
+            ntr_transport::Store32(gRegPage, ntr_transport::kRegFifo, value);
+        }
+        ++word;
+        ntr_transport::Store32(gRegPage, ntr_transport::kRegRomCnt,
+                               romcnt & ~ntr_transport::kCardDataReady);
     }
-    if (out_len < 4) {
-        return false;
-    }
-    StoreLe32(out, ntr_transport::Load32(gRegPage, ntr_transport::kRegFifo));
-    return true;
+    return false; // transfer never completed
 }
 
 // ---------------------------------------------------------------------------

@@ -36,6 +36,9 @@ struct State {
         std::make_shared<BufferMem>(gekkopak::ntr_transport::kRegisterPageSize);
     std::vector<u8> pool = std::vector<u8>(LocalMemoryBytes, 0);
     gekkopak::Device core;
+    gekkopak::ntr_transport::RegisterTransport transport;
+    u32 reported_faults = 0;
+    u64 traced_transfers = 0;
     bool initialised = false;
 };
 
@@ -59,10 +62,10 @@ void Reset() {
     config.pool_bytes = LocalMemoryBytes;
     config.reported_local_bytes = LocalMemoryBytes;
     s.core.Reset(config);
+    s.transport.Reset(s.regs->Vector().data());
+    s.reported_faults = 0;
+    s.traced_transfers = 0;
     s.initialised = true;
-
-    gekkopak::ntr_transport::Store32(s.regs->Vector().data(), gekkopak::ntr_transport::kRegRomCnt,
-                                     gekkopak::ntr_transport::kCardResetHigh);
     LOG_INFO(Core, "GekkoPAK NTR virtual cartridge reset: protocol=0x{:08X} caps=0x{:08X} "
                    "local={} MiB",
              gekkopak::protocol::kProtocolVersion, gekkopak::protocol::kCaps,
@@ -75,16 +78,28 @@ void Tick() {
         return;
     }
 
-    const bool serviced = gekkopak::ntr_transport::Tick(s.core, s.regs->Vector().data());
+    const bool serviced = s.transport.Tick(s.core, s.regs->Vector().data());
     if (!serviced) {
         return;
     }
 
-    // One line per serviced command, so the Azahar command stream can be
-    // compared against the golden vectors. Off unless GEKKOPAK_TRACE is set,
-    // because a benchmarking guest would otherwise flood the log.
+    // A guest that programs the wrong ROMCNT block size for its opcode gets no
+    // data phase. On hardware that desynchronises the bus and the symptom shows
+    // up far from the cause, so say so here.
+    if (s.transport.fault_count() != s.reported_faults) {
+        s.reported_faults = s.transport.fault_count();
+        LOG_ERROR(Core, "GekkoPAK NTR bus fault: ROMCNT block size does not match the "
+                        "opcode's data phase (fault {})",
+                  s.reported_faults);
+    }
+
+    // One line per serviced command -- not per data-phase word, of which a
+    // 512-byte block has 128. The device's transfer counter ticks once per NTR
+    // transaction, so it is what tells the two apart. Off unless GEKKOPAK_TRACE
+    // is set, because a benchmarking guest would otherwise flood the log.
     static const bool trace_enabled = std::getenv("GEKKOPAK_TRACE") != nullptr;
-    if (trace_enabled) {
+    if (trace_enabled && s.core.transfers() != s.traced_transfers) {
+        s.traced_transfers = s.core.transfers();
         const u8* cmd = s.regs->Vector().data() + gekkopak::ntr_transport::kRegCommand;
         LOG_INFO(Core,
                  "GKPAK-TRACE {:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X} depth={}",

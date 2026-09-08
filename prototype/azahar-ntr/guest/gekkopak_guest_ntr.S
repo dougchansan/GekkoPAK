@@ -10,13 +10,21 @@
 .equ REG_CMD0,    0x08
 .equ REG_CMD1,    0x0C
 .equ REG_FIFO,    0x1C
-.equ REG_BLOCK_TX, 0x100
-.equ REG_BLOCK_RX, 0x300
+
+/* Block staging lives in ordinary guest RAM now, not in the register page.
+ * A real cartridge client assembles its block in memory and streams it across
+ * the bus; there is no window on the card to build it in. */
+.equ BLOCK_TX,    0x0FFFC100
+.equ BLOCK_RX,    0x0FFFC300
+.equ BLOCK_WORDS, 128
 
 .equ CARD_START,  0x80000000
 .equ CARD_RESET,  0x20000000
 .equ CARD_READY,  0x00800000
-.equ CARD_BLK4,   0x07000000
+/* ROMCNT data-block size, bits 26:24: 0 none, 1 = 512 bytes, 7 = 4 bytes. */
+.equ CARD_BLK_NONE, 0x00000000
+.equ CARD_BLK_512,  0x01000000
+.equ CARD_BLK4,     0x07000000
 
 .equ W_WRITE_REG,   0xF0
 .equ W_EXEC,        0xF1
@@ -92,9 +100,10 @@ _start:
     mov r7, r0
     str r7, [r11, #16]
 
-    /* Build one 64-byte GKD1 descriptor + 16 inline bytes in the Azahar-only
-     * block staging window. On hardware this buffer becomes the F4 NTR data phase. */
-    add r9, r10, #REG_BLOCK_TX
+    /* Build one 64-byte GKD1 descriptor + 16 inline bytes in ordinary guest RAM.
+     * The whole 512-byte block is then streamed across the bus by F4, exactly
+     * as a cartridge client on hardware would do it. */
+    ldr r9, =BLOCK_TX
     ldr r0, =DESC_MAGIC
     str r0, [r9, #0]
     ldr r0, =DESC_VER_OP
@@ -133,12 +142,13 @@ _start:
     ldr r0, =0x0BADF00D
     str r0, [r9, #76]
 
-    /* Steady-state transaction 1/3: F4 descriptor + inline input. */
+    /* Steady-state transaction 1/3: F4 descriptor + inline input, streamed as a
+     * full 512-byte data phase with 80 meaningful bytes. */
+    ldr r6, =BLOCK_TX
     mov r0, #W_WRITE_BLOCK
     mov r1, #0
     mov r2, #80
-    mov r3, #0
-    bl wire
+    bl wire_write_block
 
     /* Steady-state transaction 2/3: one four-byte completion-depth event. */
     mov r0, #EVENT_COMPLETION_DEPTH
@@ -146,14 +156,15 @@ _start:
     cmp r0, #1
     blt failed
 
-    /* Steady-state transaction 3/3: F5 completion block. len=64, offset=0. */
+    /* Steady-state transaction 3/3: F5 completion block. The bus always moves a
+     * full 512 bytes; the value word asks for 64 meaningful bytes at offset 0. */
+    ldr r6, =BLOCK_RX
     mov r0, #W_READ_BLOCK
     mov r1, #1
     ldr r2, =0x00400000
-    mov r3, #0
-    bl wire
+    bl wire_read_block
 
-    add r9, r10, #REG_BLOCK_RX
+    ldr r9, =BLOCK_RX
     ldr r0, [r9, #0]
     ldr r1, =COMP_MAGIC
     cmp r0, r1
@@ -196,7 +207,6 @@ wrreg:
     mov r2, r1
     mov r1, r0
     mov r0, #W_WRITE_REG
-    mov r3, #0
     bl wire
     pop {pc}
 
@@ -205,8 +215,7 @@ rdreg:
     mov r1, r0
     mov r0, #W_READ_REG
     mov r2, #0
-    mov r3, #1
-    bl wire
+    bl wire_read4
     pop {pc}
 
 exec_hi:
@@ -216,7 +225,6 @@ exec_hi:
     mov r0, #W_EXEC
     mov r1, r4
     mov r2, r8
-    mov r3, #0
     bl wire
     mov r0, #R_RESULT
     bl rdreg
@@ -224,9 +232,27 @@ exec_hi:
     bne failed
     pop {r4, pc}
 
-/* r0=wire opcode, r1=index/selector, r2=value, r3=read four-byte FIFO response. */
-wire:
-    push {r4-r5, lr}
+/* ---------------------------------------------------------------------------
+ * Cartridge bus
+ *
+ * A transaction is: stage the 8-byte command, write ROMCNT with the activate
+ * bit and the block-size field the opcode requires, move the data phase through
+ * the FIFO a word at a time, then wait for the activate bit to clear.
+ *
+ * CARD_START stays set for the whole transfer, so the data phase must be
+ * serviced before waiting on it -- waiting first would deadlock against a
+ * cartridge that is waiting for us to take the first word.
+ *
+ * Per word the cartridge raises CARD_READY; we take (or supply) the word and
+ * clear CARD_READY to acknowledge. On silicon reading the FIFO clears that bit
+ * by itself; Azahar maps this page as plain memory and cannot see a read, so
+ * the acknowledgement is explicit. It is the one emulator-ism left in this
+ * path -- see include/gekkopak/ntr_register_transport.h.
+ * ------------------------------------------------------------------------- */
+
+/* r0=wire opcode, r1=index/selector, r2=value word, r3=ROMCNT block-size field.
+ * Stages the command and starts the transfer. Clobbers r4-r5. */
+stage_cmd:
     and r0, r0, #0xFF
     and r1, r1, #0xFF
     orr r4, r0, #(GK_G << 8)
@@ -246,22 +272,80 @@ wire:
     str r5, [r10, #REG_CMD1]
 
     ldr r4, =(CARD_START | CARD_RESET)
-    cmp r3, #0
-    orrne r4, r4, #CARD_BLK4
+    orr r4, r4, r3
     str r4, [r10, #REG_ROMCNT]
+    bx lr
 
+/* Spin until the cartridge drops the activate bit. Clobbers r5. */
+wait_idle:
 1:  ldr r5, [r10, #REG_ROMCNT]
     tst r5, #CARD_START
     bne 1b
+    bx lr
 
-    cmp r3, #0
-    beq 3f
-2:  ldr r5, [r10, #REG_ROMCNT]
+/* Spin until the cartridge raises CARD_READY. Clobbers r5. */
+wait_ready:
+1:  ldr r5, [r10, #REG_ROMCNT]
     tst r5, #CARD_READY
-    beq 2b
-    ldr r0, [r10, #REG_FIFO]
-3:
+    beq 1b
+    bx lr
+
+/* Acknowledge the current word. Clobbers r5. */
+ack_word:
+    ldr r5, [r10, #REG_ROMCNT]
+    bic r5, r5, #CARD_READY
+    str r5, [r10, #REG_ROMCNT]
+    bx lr
+
+/* r0=opcode, r1=index, r2=value. No data phase. */
+wire:
+    push {r4-r5, lr}
+    mov r3, #CARD_BLK_NONE
+    bl stage_cmd
+    bl wait_idle
     pop {r4-r5, pc}
+
+/* r0=opcode, r1=index, r2=value. Returns the four-byte response in r0. */
+wire_read4:
+    push {r4-r6, lr}
+    ldr r3, =CARD_BLK4
+    bl stage_cmd
+    bl wait_ready
+    ldr r6, [r10, #REG_FIFO]
+    bl ack_word
+    bl wait_idle
+    mov r0, r6
+    pop {r4-r6, pc}
+
+/* r0=opcode, r1=index, r2=value, r6=source buffer. Streams 512 bytes out. */
+wire_write_block:
+    push {r4-r7, lr}
+    ldr r3, =CARD_BLK_512
+    bl stage_cmd
+    mov r7, #BLOCK_WORDS
+1:  bl wait_ready
+    ldr r4, [r6], #4
+    str r4, [r10, #REG_FIFO]
+    bl ack_word
+    subs r7, r7, #1
+    bne 1b
+    bl wait_idle
+    pop {r4-r7, pc}
+
+/* r0=opcode, r1=index, r2=value, r6=destination buffer. Streams 512 bytes in. */
+wire_read_block:
+    push {r4-r7, lr}
+    ldr r3, =CARD_BLK_512
+    bl stage_cmd
+    mov r7, #BLOCK_WORDS
+1:  bl wait_ready
+    ldr r4, [r10, #REG_FIFO]
+    str r4, [r6], #4
+    bl ack_word
+    subs r7, r7, #1
+    bne 1b
+    bl wait_idle
+    pop {r4-r7, pc}
 
 failed:
     ldr r0, =FAIL_MAGIC
