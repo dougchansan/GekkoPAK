@@ -481,7 +481,7 @@ gets attributed to the wrong change.
 
 | Artefact | Value |
 |---|---|
-| `gekkopak_test.nds` | `8cec0e1f066cbd56bcbe679795f7446105cdf3a05aae29c86d4a18d6518234c6` (259072 B) |
+| `gekkopak_test.nds` | `5757fc1484db41c66cee7aa421a4b76b2c1d734bd664d15c8e005ae03817c0cf` (260096 B) |
 | devkitARM image | `devkitpro/devkitarm@sha256:116afba8df8453961de2936ffab20dd441edf4d682856c1ec8b0e53d7ed0bbf5` |
 | devkitARM | 16.1.0 |
 | DSpico firmware | `472c9d8e9957ad18df367f14b9cc337b9b887e65` (unchanged; the overlay carries the fix) |

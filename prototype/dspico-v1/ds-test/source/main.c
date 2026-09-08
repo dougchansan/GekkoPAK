@@ -258,6 +258,20 @@ static void log_details(void)
 {
     const gpk_report_t *r = &sReport;
     LOG("--- detail ---\n");
+    // Raw data phase first: it is the only line that separates "the cartridge
+    // cannot put bytes on the wire" from "the protocol above it is wrong".
+    LOG("F5 raw     : %s %lu/%lu\n", pf(r->f5_raw.ok),
+        (unsigned long)r->f5_raw.passes, (unsigned long)r->f5_raw.attempts);
+    if (!r->f5_raw.ok) {
+        LOG("  bad word : %lu got %08lX exp %08lX\n",
+            (unsigned long)r->f5_raw.first_bad_word,
+            (unsigned long)r->f5_raw.actual_word,
+            (unsigned long)r->f5_raw.expected_word);
+        LOG("  undriven : %lu words, pattern at byte %ld\n",
+            (unsigned long)r->f5_raw.undriven_words,
+            (r->f5_raw.magic_offset == GPK_F5_NO_MAGIC)
+                ? -1L : (long)r->f5_raw.magic_offset);
+    }
     LOG("init layer : %s\n", layer_name(r->init_layer));
     LOG("latency r/w: %lu / %lu cycles\n",
         (unsigned long)r->latency_read, (unsigned long)r->latency_write);
@@ -512,6 +526,13 @@ static void write_report_files(void)
     bool wrote_csv = (f != NULL);
     if (f) {
         fprintf(f, "metric,unit,min,median,mean,p95,max\n");
+        // Raw data-phase verdict as rows of its own. An ingest that only reads
+        // the timing rows would otherwise record throughput for a transport
+        // that never delivered a correct block.
+        fprintf(f, "f5_raw_pass,count,,%lu,,,\n", (unsigned long)r->f5_raw.passes);
+        fprintf(f, "f5_raw_attempts,count,,%lu,,,\n", (unsigned long)r->f5_raw.attempts);
+        fprintf(f, "f5_raw_undriven,words,,%lu,,,\n",
+                (unsigned long)r->f5_raw.undriven_words);
         const struct { const char *n; const gpk_stats_t *s; } rows[] = {
             { "cmd_latency", &r->cmd_latency },
             { "f4_write_512", &r->f4_latency },
