@@ -1,0 +1,7 @@
+# Shell scripts and Makefiles must keep LF endings: they are executed on Linux
+# in CI and under WSL locally, and a CRLF shebang line breaks both.
+*.sh text eol=lf
+*.bash text eol=lf
+Makefile text eol=lf
+*.mk text eol=lf
+*.S text eol=lf
