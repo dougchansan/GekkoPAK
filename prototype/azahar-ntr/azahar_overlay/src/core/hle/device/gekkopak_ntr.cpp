@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
+#include <deque>
 #include <unordered_map>
 #include <vector>
 #include "common/logging/log.h"
@@ -14,6 +16,8 @@ namespace {
 constexpr u32 RegRomCnt = 0x04;
 constexpr u32 RegCommand = 0x08;
 constexpr u32 RegFifo = 0x1C;
+constexpr u32 RegBlockTx = 0x100;
+constexpr u32 RegBlockRx = 0x300;
 constexpr u32 CardActivate = 1u << 31;
 constexpr u32 CardDataReady = 1u << 23;
 
@@ -21,12 +25,29 @@ constexpr u8 WireWriteReg = 0xF0;
 constexpr u8 WireExec = 0xF1;
 constexpr u8 WireReadReg = 0xF2;
 constexpr u8 WireWritePayloadWord = 0xF3;
+constexpr u8 WireWriteBlock = 0xF4;
+constexpr u8 WireReadBlock = 0xF5;
+constexpr u8 EventCompletionDepth = 0xFE;
 constexpr u8 Magic0 = 0x47;
 constexpr u8 Magic1 = 0x4B;
 
 constexpr u32 ProtocolVersion = 0x00010000u;
-constexpr u32 Capabilities = 0x0000000Fu;
+constexpr u32 BaseCapabilities = 0x0000000Fu;
+constexpr u32 CapBlockTransport = 1u << 4;
+constexpr u32 Capabilities = BaseCapabilities | CapBlockTransport;
 constexpr u32 LocalMemoryBytes = 32u * 1024u * 1024u;
+constexpr std::size_t BlockBytes = 512;
+constexpr std::size_t DescriptorBytes = 64;
+constexpr std::size_t CompletionBytes = 64;
+constexpr std::size_t MaxDescriptorsPerBlock = BlockBytes / DescriptorBytes;
+constexpr u32 DescriptorMagic = 0x31444B47u;
+constexpr u32 CompletionMagic = 0x31434B47u;
+constexpr u16 BlockProtocolVersion = 1;
+constexpr u16 DescriptorOpcodeSubmit = 1;
+constexpr u32 DescriptorFlagInlineInput = 1u << 0;
+constexpr double BytesPerSecond = 6.0 * 1024.0 * 1024.0;
+constexpr double CommandLatencyUs = 25.0;
+constexpr double KernelOpsPerSecond = 100'000'000.0;
 
 enum StageRegister : u8 {
     Arg0 = 0,
@@ -59,7 +80,47 @@ enum Error : u32 {
     BadHandle = 2,
     NoMemory = 3,
     NotReady = 4,
+    BadDescriptor = 5,
+    BadBlock = 6,
 };
+
+struct JobDescriptorV1 {
+    u32 magic{DescriptorMagic};
+    u16 version{BlockProtocolVersion};
+    u16 opcode{DescriptorOpcodeSubmit};
+    u32 sequence{};
+    u32 flags{};
+    u32 input_handle{};
+    u32 input_offset{};
+    u32 input_length{};
+    u32 output_handle{};
+    u32 output_offset{};
+    u32 output_length{};
+    u32 kernel_id{};
+    u32 work_units{};
+    u32 arg0{};
+    u32 arg1{};
+    u32 arg2{};
+    u32 arg3{};
+};
+static_assert(sizeof(JobDescriptorV1) == DescriptorBytes);
+
+struct CompletionRecordV1 {
+    u32 magic{CompletionMagic};
+    u16 version{BlockProtocolVersion};
+    u16 status{static_cast<u16>(Ok)};
+    u32 sequence{};
+    u32 job_handle{};
+    u32 modeled_us{};
+    u32 speedup_x1000{};
+    u32 checksum{};
+    u32 software_us{};
+    u32 output_length{};
+    u32 transport_us_x1000{};
+    u32 batch_size{};
+    u32 reserved[5]{};
+};
+static_assert(sizeof(CompletionRecordV1) == CompletionBytes);
 
 struct Allocation {
     std::vector<u8> data;
@@ -84,6 +145,7 @@ struct State {
     std::array<u8, 1024> payload{};
     std::unordered_map<u32, Allocation> allocations;
     std::unordered_map<u32, Job> jobs;
+    std::deque<CompletionRecordV1> completions;
     u32 next_alloc{1};
     u32 next_job{1};
     u64 allocated_bytes{};
@@ -118,10 +180,162 @@ u32 Fnv1a(const u8* data, std::size_t size) {
 }
 
 u32 ModelJobUs(u32 tx_bytes, u32 rx_bytes, u32 operations) {
-    const double tx = (static_cast<double>(tx_bytes) / (6.0 * 1024.0 * 1024.0)) * 1'000'000.0;
-    const double rx = (static_cast<double>(rx_bytes) / (6.0 * 1024.0 * 1024.0)) * 1'000'000.0;
-    const double compute = (static_cast<double>(operations) / 100'000'000.0) * 1'000'000.0;
-    return static_cast<u32>(25.0 + tx + rx + compute + 0.5);
+    const double tx = (static_cast<double>(tx_bytes) / BytesPerSecond) * 1'000'000.0;
+    const double rx = (static_cast<double>(rx_bytes) / BytesPerSecond) * 1'000'000.0;
+    const double compute = (static_cast<double>(operations) / KernelOpsPerSecond) * 1'000'000.0;
+    return static_cast<u32>(CommandLatencyUs + tx + rx + compute + 0.5);
+}
+
+double V1BatchTransportUs() {
+    constexpr double bytes = static_cast<double>(BlockBytes + 4 + BlockBytes);
+    return 3.0 * CommandLatencyUs + (bytes / BytesPerSecond) * 1'000'000.0;
+}
+
+void QueueDescriptorBatch(const std::vector<JobDescriptorV1>& descriptors,
+                          const std::vector<const u8*>& inline_inputs) {
+    auto& s = GetState();
+    const u32 batch_size = static_cast<u32>(descriptors.size());
+    const double transport_share_us = V1BatchTransportUs() / static_cast<double>(batch_size);
+    const u32 transport_us_x1000 =
+        static_cast<u32>(std::llround(transport_share_us * 1000.0));
+
+    for (std::size_t i = 0; i < descriptors.size(); ++i) {
+        const auto& desc = descriptors[i];
+        CompletionRecordV1 completion{};
+        completion.sequence = desc.sequence;
+        completion.software_us = desc.arg0;
+        completion.output_length = desc.output_length;
+        completion.transport_us_x1000 = transport_us_x1000;
+        completion.batch_size = batch_size;
+
+        auto input_it = s.allocations.find(desc.input_handle);
+        if (input_it == s.allocations.end() || desc.input_offset > input_it->second.data.size() ||
+            desc.input_length > input_it->second.data.size() - desc.input_offset) {
+            completion.status = static_cast<u16>(BadHandle);
+            s.completions.push_back(completion);
+            continue;
+        }
+
+        auto& allocation = input_it->second;
+        if (inline_inputs[i] != nullptr) {
+            std::copy_n(inline_inputs[i], desc.input_length,
+                        allocation.data.begin() + desc.input_offset);
+            allocation.uploaded = std::max(
+                allocation.uploaded,
+                static_cast<std::size_t>(desc.input_offset + desc.input_length));
+        } else if (allocation.uploaded <
+                   static_cast<std::size_t>(desc.input_offset + desc.input_length)) {
+            completion.status = static_cast<u16>(BadDescriptor);
+            s.completions.push_back(completion);
+            continue;
+        }
+
+        if (desc.output_handle != 0) {
+            auto output_it = s.allocations.find(desc.output_handle);
+            if (output_it == s.allocations.end() ||
+                desc.output_offset > output_it->second.data.size() ||
+                desc.output_length > output_it->second.data.size() - desc.output_offset) {
+                completion.status = static_cast<u16>(BadHandle);
+                s.completions.push_back(completion);
+                continue;
+            }
+        }
+
+        const u32 handle = s.next_job++;
+        Job job;
+        job.allocation = desc.input_handle;
+        job.kernel = desc.kernel_id;
+        job.operations = desc.work_units;
+        job.software_us = desc.arg0;
+        job.checksum = Fnv1a(allocation.data.data() + desc.input_offset, desc.input_length);
+        const double compute_us =
+            (static_cast<double>(job.operations) / KernelOpsPerSecond) * 1'000'000.0;
+        job.modeled_us = static_cast<u32>(std::llround(compute_us + transport_share_us));
+        job.speedup_x1000 = job.modeled_us
+                                ? static_cast<u32>((static_cast<u64>(job.software_us) * 1000u) /
+                                                   job.modeled_us)
+                                : 0;
+        job.ready = true;
+        job.polls_remaining = 0;
+        s.jobs.emplace(handle, job);
+
+        completion.job_handle = handle;
+        completion.modeled_us = job.modeled_us;
+        completion.speedup_x1000 = job.speedup_x1000;
+        completion.checksum = job.checksum;
+        s.completions.push_back(completion);
+    }
+}
+
+void ProcessWriteBlock(u8 selector, u32 word) {
+    auto& s = GetState();
+    const u32 len = word & 0xFFFFu;
+    if (selector != 0 || len == 0 || len > BlockBytes) {
+        s.stage[Result] = BadBlock;
+        return;
+    }
+
+    auto& regs = s.regs->Vector();
+    const u8* data = regs.data() + RegBlockTx;
+    std::vector<JobDescriptorV1> descriptors;
+    std::vector<const u8*> inline_inputs;
+    std::size_t cursor = 0;
+
+    while (cursor + sizeof(JobDescriptorV1) <= len &&
+           descriptors.size() < MaxDescriptorsPerBlock) {
+        JobDescriptorV1 desc{};
+        std::memcpy(&desc, data + cursor, sizeof(desc));
+        if (desc.magic == 0)
+            break;
+        if (desc.magic != DescriptorMagic || desc.version != BlockProtocolVersion ||
+            desc.opcode != DescriptorOpcodeSubmit) {
+            s.stage[Result] = BadDescriptor;
+            return;
+        }
+
+        cursor += sizeof(desc);
+        const bool inline_input = (desc.flags & DescriptorFlagInlineInput) != 0;
+        const std::size_t inline_len = inline_input ? desc.input_length : 0;
+        if (inline_len > len - cursor) {
+            s.stage[Result] = BadBlock;
+            return;
+        }
+
+        descriptors.push_back(desc);
+        inline_inputs.push_back(inline_input ? data + cursor : nullptr);
+        cursor += inline_len;
+    }
+
+    if (descriptors.empty()) {
+        s.stage[Result] = BadDescriptor;
+        return;
+    }
+
+    QueueDescriptorBatch(descriptors, inline_inputs);
+    LOG_INFO(Core, "GekkoPAK NTR v1 F4 submit: batch={} completion_depth={}",
+             descriptors.size(), s.completions.size());
+}
+
+void ProcessReadBlock(u8 selector, u32 word) {
+    auto& s = GetState();
+    const u32 offset = word & 0xFFFFu;
+    const u32 len = word >> 16;
+    if (selector != 1 || offset != 0 || len == 0 || len > BlockBytes) {
+        s.stage[Result] = BadBlock;
+        return;
+    }
+
+    auto& regs = s.regs->Vector();
+    std::fill_n(regs.begin() + RegBlockRx, BlockBytes, 0);
+    std::size_t written = 0;
+    while (!s.completions.empty() && written + sizeof(CompletionRecordV1) <= len) {
+        std::memcpy(regs.data() + RegBlockRx + written, &s.completions.front(),
+                    sizeof(CompletionRecordV1));
+        s.completions.pop_front();
+        written += sizeof(CompletionRecordV1);
+    }
+    LOG_INFO(Core, "GekkoPAK NTR v1 F5 read: bytes={} remaining={}", written,
+             s.completions.size());
 }
 
 void ExecuteHighCommand(u8 command, u32 seq) {
@@ -264,7 +478,10 @@ void ProcessWireCommand(const u8 cmd[8]) {
         ExecuteHighCommand(cmd[3], word);
         break;
     case WireReadReg:
-        if (cmd[3] < s.stage.size()) {
+        if (cmd[3] == EventCompletionDepth) {
+            Store32(RegFifo, static_cast<u32>(std::min<std::size_t>(s.completions.size(), 0xFFFFu)));
+            Store32(RegRomCnt, Load32(RegRomCnt) | CardDataReady);
+        } else if (cmd[3] < s.stage.size()) {
             Store32(RegFifo, s.stage[cmd[3]]);
             Store32(RegRomCnt, Load32(RegRomCnt) | CardDataReady);
         }
@@ -275,6 +492,12 @@ void ProcessWireCommand(const u8 cmd[8]) {
             std::memcpy(s.payload.data() + offset, &word, sizeof(word));
         break;
     }
+    case WireWriteBlock:
+        ProcessWriteBlock(cmd[3], word);
+        break;
+    case WireReadBlock:
+        ProcessReadBlock(cmd[3], word);
+        break;
     default:
         break;
     }
@@ -293,6 +516,7 @@ void Reset() {
     s.payload.fill(0);
     s.allocations.clear();
     s.jobs.clear();
+    s.completions.clear();
     s.next_alloc = 1;
     s.next_job = 1;
     s.allocated_bytes = 0;
