@@ -137,9 +137,12 @@ public:
     const std::uint8_t* registers() const { return regs_.data(); }
     std::size_t register_size() const { return regs_.size(); }
 
-    // F0-F3 bootstrap/debug transport: consume one command from the register
-    // page, driven by the ROMCNT activate bit.
-    void Tick();
+    // The register window, accessed the way a guest accesses it. Writing ROMCNT
+    // with the activate bit runs a command; reading the FIFO takes a data-phase
+    // word. There is no service tick -- the transport is access-driven, as the
+    // hardware is.
+    std::uint32_t Read32(std::size_t offset);
+    void Write32(std::size_t offset, std::uint32_t value);
 
     // F4/F5 block transport. Each call is one complete NTR command plus its
     // data phase.

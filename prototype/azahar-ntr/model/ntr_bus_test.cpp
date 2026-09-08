@@ -7,9 +7,6 @@
 
 using namespace gekkopak::ntr;
 
-static void store32(std::uint8_t* p, std::size_t off, std::uint32_t v) {
-    std::memcpy(p + off, &v, sizeof(v));
-}
 static std::uint32_t load32(const std::uint8_t* p, std::size_t off) {
     std::uint32_t v{};
     std::memcpy(&v, p + off, sizeof(v));
@@ -18,29 +15,23 @@ static std::uint32_t load32(const std::uint8_t* p, std::size_t off) {
 
 static std::uint64_t wire(Device& d, std::uint8_t op, std::uint8_t index,
                           std::uint32_t value, bool read = false) {
-    auto* r = d.registers();
-    // Canonical big-endian wire form, the order DSpico's PIO delivers.
+    // Canonical big-endian wire form, the order DSpico's PIO delivers, staged
+    // into CMD0/CMD1 as the little-endian words a guest would store.
     std::uint8_t cmd[protocol::kCommandBytes]{};
     protocol::EncodeCommand(op, index, value, cmd);
-    std::memcpy(r + kRegCommand, cmd, sizeof(cmd));
+    d.Write32(kRegCommand, load32(cmd, 0));
+    d.Write32(kRegCommand + 4, load32(cmd, 4));
     // A four-byte read declares block size 7; everything else declares none.
-    store32(r, kRegRomCnt,
-            kCardResetHigh | kCardActivate | (read ? kCardBlock4 : kCardBlockNone));
+    d.Write32(kRegRomCnt, kCardResetHigh | kCardActivate | (read ? kCardBlock4 : kCardBlockNone));
 
-    // Drive the data phase the way the guest does: take each word the cartridge
-    // offers and clear DATA_READY to acknowledge it.
+    // The command runs on the ROMCNT write. A four-byte read leaves one word in
+    // the FIFO, and taking it is what ends the transfer.
     std::uint32_t response = 0;
-    for (int guard = 0; guard < 64; ++guard) {
-        d.Tick();
-        const std::uint32_t romcnt = load32(r, kRegRomCnt);
-        if ((romcnt & kCardActivate) == 0)
-            break;
-        if ((romcnt & kCardDataReady) == 0)
-            continue;
-        response = load32(r, kRegFifo);
-        store32(r, kRegRomCnt, romcnt & ~kCardDataReady);
+    if (read) {
+        assert((d.Read32(kRegRomCnt) & kCardDataReady) != 0);
+        response = d.Read32(kRegFifo);
     }
-    assert((load32(r, kRegRomCnt) & kCardActivate) == 0);
+    assert((d.Read32(kRegRomCnt) & kCardActivate) == 0);
     return read ? response : 0;
 }
 

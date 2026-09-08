@@ -81,14 +81,12 @@ declares the block size in ROMCNT bits 26:24, and streams 128 words;
 `CARD_START` stays asserted until the last one crosses. Declaring the wrong
 block size for an opcode is a reported bus fault.
 
-The one emulator-ism left is the per-word acknowledgement: on silicon, reading
-the FIFO clears `DATA_READY` by itself, but Azahar maps this page as ordinary
-memory and has no MMIO page type, so the device cannot see a read. The guest
-clears the bit explicitly instead. See
-`include/gekkopak/ntr_register_transport.h`.
+There is no acknowledgement: reading the FIFO advances the transfer and clears
+`DATA_READY` by itself, as on silicon. That needed an MMIO page type in Azahar,
+which the overlay adds — see `docs/AZAHAR_MMIO.md`.
 
-Timing is still not modelled: a word crosses when the next service tick comes
-round, not after a number of card clocks.
+Timing is still not modelled: a word crosses as fast as the guest can issue a
+load, not after a number of card clocks.
 
 ## Patched Azahar run
 

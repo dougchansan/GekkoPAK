@@ -8,30 +8,30 @@
 // identically" a property of the code rather than a claim about two copies.
 //
 // Freestanding, like the rest of the core: the caller owns the page, whether it
-// is a std::array or an Azahar BackingMem.
+// is a std::array or an Azahar MMIO region.
 //
 // ---------------------------------------------------------------------------
-// Fidelity, and the one remaining emulator-ism
+// Access-driven, like the hardware
 // ---------------------------------------------------------------------------
 //
-// The data phase is modelled the way the bus actually works: the guest declares
-// a transfer length in ROMCNT's block-size field, the transfer stays active
-// until every word has crossed, and each word crosses through the FIFO
-// register. A guest that programs the wrong block size for its opcode is now a
-// fault rather than something nothing notices.
+// This transport is driven by individual register accesses, not by a periodic
+// service tick. Writing ROMCNT with the activate bit runs the command; reading
+// the FIFO takes a word and advances the transfer, clearing DATA_READY by
+// itself exactly as the cartridge does; writing the FIFO supplies one. There is
+// no acknowledgement protocol, because there is none on silicon.
 //
-// What is NOT hardware is the per-word acknowledgement. On silicon, reading the
-// FIFO clears DATA_READY by itself. Azahar maps this page as ordinary backing
-// memory -- it has no MMIO page type at all, Citra's MMIORegion having been
-// removed -- so the device cannot see an individual read or write and cannot
-// auto-clear anything. The guest therefore clears DATA_READY itself to say "I
-// have taken that word" (or "I have supplied that word"), and the device
-// advances on the next service tick. That is the same shape as the CARD_START
-// handshake the command phase already uses.
+// That requires the emulator to see an individual register access. Azahar
+// cannot do that with an ordinary memory mapping -- Citra's MMIORegion was
+// removed and the page would simply be RAM -- so the GekkoPAK overlay adds an
+// MMIO page type back and routes this window through it. See docs/AZAHAR_MMIO.md.
 //
-// The cost is one service tick per word, so 128 ticks per 512-byte block. The
-// device is serviced once per CPU slice and a frame is many slices, so a full
-// block transfer is comfortably inside a frame.
+// A guest that programs the wrong ROMCNT block size for its opcode, or touches
+// the FIFO with no transfer open, is a reported fault rather than something
+// nothing notices.
+//
+// What is still not modelled is time. A transfer completes as fast as the guest
+// can issue loads and stores; there are no card clocks, no latency settings and
+// no bus contention.
 
 #ifndef GEKKOPAK_NTR_REGISTER_TRANSPORT_H
 #define GEKKOPAK_NTR_REGISTER_TRANSPORT_H
@@ -111,8 +111,11 @@ public:
         None = 0,
         // ROMCNT's block-size field did not match the data phase the opcode
         // requires. On hardware this desynchronises the bus; here it is
-        // reported and the command is refused.
+        // reported and the command refused.
         BlockSizeMismatch,
+        // The FIFO was touched with no transfer open, or in the wrong
+        // direction. On hardware that reads undriven data, or is discarded.
+        FifoOutOfPhase,
     };
 
     void Reset(std::uint8_t* regs) {
@@ -123,8 +126,10 @@ public:
         command_word_ = 0;
         fault_ = Fault::None;
         fault_count_ = 0;
+        commands_ = 0;
         std::memset(buffer_, 0, sizeof(buffer_));
         if (regs != nullptr) {
+            std::memset(regs, 0, kRegisterPageSize);
             Store32(regs, kRegRomCnt, kCardResetHigh);
         }
     }
@@ -132,22 +137,40 @@ public:
     bool transfer_active() const { return direction_ != PhaseDirection::None; }
     Fault last_fault() const { return fault_; }
     std::uint32_t fault_count() const { return fault_count_; }
+    // NTR transactions accepted, so an adapter can tell a command apart from
+    // the data-phase accesses that follow it.
+    std::uint64_t commands() const { return commands_; }
 
-    // Services the page for one slice. Returns true when something was done --
-    // a command was accepted, or a data-phase word crossed.
-    bool Tick(Device& device, std::uint8_t* regs) {
-        if (direction_ != PhaseDirection::None) {
-            return ServiceDataPhase(device, regs);
+    // One 32-bit read of the register window.
+    std::uint32_t Read32(Device& device, std::uint8_t* regs, std::uint32_t offset) {
+        if (offset + 4u > kRegisterPageSize) {
+            return 0;
         }
-        return StartCommand(device, regs);
+        if (offset == kRegFifo) {
+            return ReadFifo(device, regs);
+        }
+        return Load32(regs, offset);
+    }
+
+    // One 32-bit write to the register window.
+    void Write32(Device& device, std::uint8_t* regs, std::uint32_t offset, std::uint32_t value) {
+        if (offset + 4u > kRegisterPageSize) {
+            return;
+        }
+        if (offset == kRegFifo) {
+            WriteFifo(device, regs, value);
+            return;
+        }
+        Store32(regs, offset, value);
+        if (offset == kRegRomCnt && (value & kCardActivate) != 0 &&
+            direction_ == PhaseDirection::None) {
+            StartCommand(device, regs);
+        }
     }
 
 private:
-    bool StartCommand(Device& device, std::uint8_t* regs) {
+    void StartCommand(Device& device, std::uint8_t* regs) {
         const std::uint32_t romcnt = Load32(regs, kRegRomCnt);
-        if ((romcnt & kCardActivate) == 0) {
-            return false;
-        }
 
         std::uint8_t bytes[protocol::kCommandBytes];
         std::memcpy(bytes, regs + kRegCommand, sizeof(bytes));
@@ -155,20 +178,21 @@ private:
 
         // One NTR transaction, however many words its data phase carries.
         device.count_transfer();
+        ++commands_;
 
         if (!cmd.valid) {
             // Not GekkoPAK traffic. A real cartridge would let another command
             // family claim it; here it is simply dropped.
-            Store32(regs, kRegRomCnt, romcnt & ~(kCardActivate | kCardDataReady));
-            return true;
+            EndTransfer(regs);
+            return;
         }
 
         const ExpectedPhase phase = PhaseForOpcode(cmd.opcode);
         if ((romcnt & kCardBlockMask) != phase.block_field) {
             fault_ = Fault::BlockSizeMismatch;
             ++fault_count_;
-            Store32(regs, kRegRomCnt, romcnt & ~(kCardActivate | kCardDataReady));
-            return true;
+            EndTransfer(regs);
+            return;
         }
 
         index_ = cmd.index;
@@ -188,8 +212,8 @@ private:
             default:
                 break;
             }
-            Store32(regs, kRegRomCnt, romcnt & ~(kCardActivate | kCardDataReady));
-            return true;
+            EndTransfer(regs);
+            return;
         }
 
         // Open a data phase. CARD_START stays set until the last word crosses.
@@ -205,53 +229,50 @@ private:
             } else {
                 device.ReadBlock(cmd.index, cmd.word, buffer_, phase.bytes);
             }
-            PresentWord(regs, 0);
         }
-
-        // CARD_START stays set for the duration; DATA_READY says a word is
-        // available (outbound) or expected (inbound).
-        Store32(regs, kRegRomCnt, romcnt | kCardDataReady);
-        return true;
+        Store32(regs, kRegRomCnt, Load32(regs, kRegRomCnt) | kCardDataReady);
     }
 
-    bool ServiceDataPhase(Device& device, std::uint8_t* regs) {
-        const std::uint32_t romcnt = Load32(regs, kRegRomCnt);
-        // DATA_READY still set means the guest has not taken (or supplied) the
-        // current word yet. See the emulator-ism note at the top of this file.
-        if ((romcnt & kCardDataReady) != 0) {
-            return false;
+    std::uint32_t ReadFifo(Device& device, std::uint8_t* regs) {
+        (void)device;
+        if (direction_ != PhaseDirection::CartToConsole) {
+            fault_ = Fault::FifoOutOfPhase;
+            ++fault_count_;
+            return 0;
         }
 
-        if (direction_ == PhaseDirection::ConsoleToCart) {
-            const std::uint32_t value = Load32(regs, kRegFifo);
-            std::memcpy(buffer_ + static_cast<std::size_t>(word_index_) * 4u, &value,
-                        sizeof(value));
-        }
-
+        std::uint32_t value = 0;
+        std::memcpy(&value, buffer_ + static_cast<std::size_t>(word_index_) * 4u, sizeof(value));
+        // Reading the FIFO is what advances the transfer and clears DATA_READY
+        // on hardware. Being able to observe this read is the whole reason the
+        // window needs an MMIO page rather than backing memory.
         ++word_index_;
-        if (word_index_ < word_count_) {
-            if (direction_ == PhaseDirection::CartToConsole) {
-                PresentWord(regs, word_index_);
-            }
-            Store32(regs, kRegRomCnt, romcnt | kCardDataReady);
-            return true;
+        if (word_index_ >= word_count_) {
+            EndTransfer(regs);
+        }
+        return value;
+    }
+
+    void WriteFifo(Device& device, std::uint8_t* regs, std::uint32_t value) {
+        if (direction_ != PhaseDirection::ConsoleToCart) {
+            fault_ = Fault::FifoOutOfPhase;
+            ++fault_count_;
+            return;
         }
 
-        // Last word has crossed. Deliver a console-to-cartridge payload now that
-        // all of it has arrived, then close the transfer.
-        if (direction_ == PhaseDirection::ConsoleToCart) {
+        std::memcpy(buffer_ + static_cast<std::size_t>(word_index_) * 4u, &value, sizeof(value));
+        ++word_index_;
+        if (word_index_ >= word_count_) {
+            // The whole block has arrived; hand it to the device, then close.
             device.WriteBlock(index_, command_word_, buffer_,
                               static_cast<std::size_t>(word_count_) * 4u);
+            EndTransfer(regs);
         }
-        direction_ = PhaseDirection::None;
-        Store32(regs, kRegRomCnt, romcnt & ~(kCardActivate | kCardDataReady));
-        return true;
     }
 
-    void PresentWord(std::uint8_t* regs, std::uint16_t word) {
-        std::uint32_t value = 0;
-        std::memcpy(&value, buffer_ + static_cast<std::size_t>(word) * 4u, sizeof(value));
-        Store32(regs, kRegFifo, value);
+    void EndTransfer(std::uint8_t* regs) {
+        direction_ = PhaseDirection::None;
+        Store32(regs, kRegRomCnt, Load32(regs, kRegRomCnt) & ~(kCardActivate | kCardDataReady));
     }
 
     PhaseDirection direction_ = PhaseDirection::None;
@@ -262,6 +283,7 @@ private:
     std::uint8_t buffer_[protocol::kBlockBytes]{};
     Fault fault_ = Fault::None;
     std::uint32_t fault_count_ = 0;
+    std::uint64_t commands_ = 0;
 };
 
 } // namespace ntr_transport

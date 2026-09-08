@@ -23,8 +23,12 @@ void Device::Store32(std::size_t off, std::uint32_t value) {
     ntr_transport::Store32(regs_.data(), off, value);
 }
 
-void Device::Tick() {
-    transport_.Tick(core_, regs_.data());
+std::uint32_t Device::Read32(std::size_t offset) {
+    return transport_.Read32(core_, regs_.data(), static_cast<std::uint32_t>(offset));
+}
+
+void Device::Write32(std::size_t offset, std::uint32_t value) {
+    transport_.Write32(core_, regs_.data(), static_cast<std::uint32_t>(offset), value);
 }
 
 bool Device::WriteBlock(BlockSelector selector, const std::uint8_t* data, std::size_t len,

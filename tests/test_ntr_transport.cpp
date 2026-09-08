@@ -37,58 +37,48 @@ struct Bus {
         transport.Reset(page);
     }
 
+    std::uint32_t Read(std::uint32_t offset) { return transport.Read32(device, page, offset); }
+    void Write(std::uint32_t offset, std::uint32_t value) {
+        transport.Write32(device, page, offset, value);
+    }
+
     void Stage(std::uint8_t opcode, std::uint8_t index, std::uint32_t word,
                std::uint32_t block_field) {
         std::uint8_t cmd[kCommandBytes];
         EncodeCommand(opcode, index, word, cmd);
-        std::memcpy(page + kRegCommand, cmd, sizeof(cmd));
-        Store32(page, kRegRomCnt, kCardResetHigh | kCardActivate | block_field);
+        std::uint32_t lo = 0;
+        std::uint32_t hi = 0;
+        std::memcpy(&lo, cmd, sizeof(lo));
+        std::memcpy(&hi, cmd + 4, sizeof(hi));
+        Write(kRegCommand, lo);
+        Write(kRegCommand + 4, hi);
+        Write(kRegRomCnt, kCardResetHigh | kCardActivate | block_field);
     }
 
-    std::uint32_t romcnt() const { return Load32(page, kRegRomCnt); }
-    bool active() const { return (romcnt() & kCardActivate) != 0; }
-    bool ready() const { return (romcnt() & kCardDataReady) != 0; }
-
-    void Tick() { transport.Tick(device, page); }
-
-    void TakeWord(std::uint8_t* out) {
-        const std::uint32_t value = Load32(page, kRegFifo);
-        if (out != nullptr) {
-            std::memcpy(out, &value, sizeof(value));
-        }
-        Store32(page, kRegRomCnt, romcnt() & ~kCardDataReady);
-    }
-
-    void GiveWord(const std::uint8_t* in) {
-        std::uint32_t value = 0;
-        std::memcpy(&value, in, sizeof(value));
-        Store32(page, kRegFifo, value);
-        Store32(page, kRegRomCnt, romcnt() & ~kCardDataReady);
-    }
+    std::uint32_t romcnt() { return Read(kRegRomCnt); }
+    bool active() { return (romcnt() & kCardActivate) != 0; }
+    bool ready() { return (romcnt() & kCardDataReady) != 0; }
 
     // Runs a whole transaction, returning how many data words crossed.
     std::size_t Run(std::uint8_t opcode, std::uint8_t index, std::uint32_t word,
                     std::uint32_t block_field, const std::uint8_t* in, std::uint8_t* out) {
         Stage(opcode, index, word, block_field);
         std::size_t words = 0;
-        for (int guard = 0; guard < 1000; ++guard) {
-            Tick();
-            if (!active()) {
-                break;
-            }
-            if (!ready()) {
-                continue;
-            }
+        while (active()) {
+            assert(ready());
             if (out != nullptr) {
-                TakeWord(out + words * 4u);
+                const std::uint32_t value = Read(kRegFifo);
+                std::memcpy(out + words * 4u, &value, sizeof(value));
             } else if (in != nullptr) {
-                GiveWord(in + words * 4u);
+                std::uint32_t value = 0;
+                std::memcpy(&value, in + words * 4u, sizeof(value));
+                Write(kRegFifo, value);
             } else {
-                TakeWord(nullptr);
+                (void)Read(kRegFifo);
             }
             ++words;
+            assert(words <= kBlockBytes / 4);
         }
-        assert(!active());
         return words;
     }
 };
@@ -125,22 +115,17 @@ void TestFourByteReadIsOneWord() {
     Exec(bus, kHello, 1);
 
     bus.Stage(kWireReadReg, kOut0, 0, kCardBlock4);
-    bus.Tick();
-    // The transfer holds CARD_START until the word is taken. Under the old
-    // model it cleared immediately, which is what let a data phase go unmodelled.
+    // Writing ROMCNT ran the command. The transfer holds CARD_START until the
+    // word is taken, so both bits are set before the FIFO is touched.
     assert(bus.active());
     assert(bus.ready());
 
-    std::uint8_t out[4]{};
-    bus.TakeWord(out);
-    bus.Tick();
+    const std::uint32_t value = bus.Read(kRegFifo);
+    // Reading the FIFO is what ends the transfer. Nothing acknowledged it.
     assert(!bus.active());
     assert(!bus.ready());
-
-    std::uint32_t value = 0;
-    std::memcpy(&value, out, sizeof(value));
     assert(value == kProtocolVersion);
-    std::printf("four-byte read: one word, CARD_START held until acknowledged\n");
+    std::printf("four-byte read: reading the FIFO ends the transfer by itself\n");
 }
 
 void TestBlockSizeMustMatchOpcode() {
@@ -148,14 +133,12 @@ void TestBlockSizeMustMatchOpcode() {
 
     // A four-byte read that forgets to declare block size 7.
     bus.Stage(kWireReadReg, kOut0, 0, kCardBlockNone);
-    bus.Tick();
     assert(!bus.active());
     assert(bus.transport.fault_count() == 1);
     assert(bus.transport.last_fault() == RegisterTransport::Fault::BlockSizeMismatch);
 
     // A command with no data phase that wrongly declares one.
     bus.Stage(kWireExec, kHello, 1, kCardBlock512);
-    bus.Tick();
     assert(!bus.active());
     assert(bus.transport.fault_count() == 2);
     // The refused command did not run: OUT0 is still zero.
@@ -163,7 +146,6 @@ void TestBlockSizeMustMatchOpcode() {
 
     // F4 without the 512-byte declaration.
     bus.Stage(kWireWriteBlock, kSelectorSubmission, EncodeWriteBlockWord(64), kCardBlockNone);
-    bus.Tick();
     assert(!bus.active());
     assert(bus.transport.fault_count() == 3);
     std::printf("block size: a mismatched ROMCNT field is a fault, not a silent pass\n");
@@ -251,9 +233,13 @@ void TestBadDiscriminatorStillEndsTheTransfer() {
     std::uint8_t cmd[kCommandBytes];
     EncodeCommand(kWireExec, kHello, 1, cmd);
     cmd[1] = 0x00; // break "GK"
-    std::memcpy(bus.page + kRegCommand, cmd, sizeof(cmd));
-    Store32(bus.page, kRegRomCnt, kCardResetHigh | kCardActivate | kCardBlockNone);
-    bus.Tick();
+    std::uint32_t lo = 0;
+    std::uint32_t hi = 0;
+    std::memcpy(&lo, cmd, sizeof(lo));
+    std::memcpy(&hi, cmd + 4, sizeof(hi));
+    bus.Write(kRegCommand, lo);
+    bus.Write(kRegCommand + 4, hi);
+    bus.Write(kRegRomCnt, kCardResetHigh | kCardActivate | kCardBlockNone);
     assert(!bus.active());
     assert(bus.transport.fault_count() == 0); // not our command, not our fault
     assert(ReadReg(bus, kOut0) == 0);
