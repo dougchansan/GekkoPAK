@@ -233,7 +233,17 @@ wire:
     orr r4, r4, #(GK_K << 16)
     orr r4, r4, r1, lsl #24
     str r4, [r10, #REG_CMD0]
-    str r2, [r10, #REG_CMD1]
+
+    /* The command value word goes out big-endian, MSB first.
+     *
+     * CMD0's bytes already land in wire order because the opcode sits in the
+     * low byte of a little-endian store. CMD1 does not: a plain str would put
+     * the value's LSB on the bus first, which is the byte order DSpico's PIO
+     * reads as the MSB. The DS-side test client byte-swaps for exactly this
+     * reason, and the emulator has to agree with the silicon rather than the
+     * other way round. */
+    rev r5, r2
+    str r5, [r10, #REG_CMD1]
 
     ldr r4, =(CARD_START | CARD_RESET)
     cmp r3, #0
