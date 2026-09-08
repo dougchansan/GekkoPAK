@@ -487,6 +487,19 @@ gets attributed to the wrong change.
 | DSpico firmware | `472c9d8e9957ad18df367f14b9cc337b9b887e65` (unchanged; the overlay carries the fix) |
 | Pico SDK | `6a7db34ff63345a7badec79ebea3aaef1712f374` |
 | RP2040 cross-build | green in CI with the scratch-RAM placement |
+| Firmware UF2 | `6bf428de2763d6332be24d26021b5a08e1cf22bd8c96d47a6e1137ca99e2b503` (1209856 B) |
+| Firmware size | text 604884, bss 214320 |
+| `.scratch_y` | **4088 of 4096 bytes** |
+
+The scratch figure is the one to watch. Eight bytes of headroom means any future
+addition to a hot handler overflows the region, and the failure mode is a link
+error rather than anything subtle -- but it also means the placement cannot be
+extended without moving something else out first. `verify_overlay.py` asserts
+which handlers must stay hot so the decision is not re-litigated by accident.
+
+The UF2 embeds the same boot ROM as the original bring-up, verified by hash
+before the build, so the only difference from the previously flashed image is
+the GekkoPAK overlay.
 
 The firmware UF2 is not listed: it embeds the user-supplied boot ROM, so its
 hash is specific to the machine that built it and is recorded with the results
