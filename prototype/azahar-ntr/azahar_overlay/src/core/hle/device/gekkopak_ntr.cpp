@@ -20,6 +20,7 @@
 #include <vector>
 #include "common/logging/log.h"
 #include "common/memory_ref.h"
+#include "core/memory.h"
 #include "gekkopak/device.h"
 #include "gekkopak/ntr_register_transport.h"
 #include "gekkopak/protocol.h"
@@ -90,8 +91,20 @@ void AnnounceCompletion(State& s) {
 
 } // namespace
 
-std::shared_ptr<BackingMem> GetRegisterMemory() {
-    return GetState().regs;
+void Install() {
+    auto& s = GetState();
+    Memory::MMIOHandler handler;
+    // Captureless lambdas so these convert to plain function pointers; the
+    // registry holds no C++ objects belonging to the device.
+    handler.read32 = [](u32 offset) { return Read32(offset); };
+    handler.write32 = [](u32 offset, u32 value) { Write32(offset, value); };
+    handler.on_map = []() { Reset(); };
+    // The backing buffer exists only so the VM manager can carve a VMA -- there
+    // is no physical memory behind an IO address. It is never served to the
+    // guest, and doubles as the device's own register storage.
+    if (!Memory::RegisterMMIOWindow(PhysicalBase, RegisterPageSize, handler, s.regs)) {
+        LOG_ERROR(Core, "GekkoPAK NTR: no free MMIO window slot");
+    }
 }
 
 void Reset() {

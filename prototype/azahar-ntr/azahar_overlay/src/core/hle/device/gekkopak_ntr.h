@@ -19,13 +19,15 @@ constexpr u32 PhysicalBase = 0x10164000u;
 constexpr u32 VirtualBase = 0x1EC64000u;
 constexpr u32 RegisterPageSize = 0x1000u;
 
-/// Backing store for the register window.
+/// Registers the NTRCARD window with Azahar's MMIO registry.
 ///
-/// The VM manager needs a MemoryRef to carve a VMA, and there is no physical
-/// memory behind an IO address. This buffer supplies one. It is never served to
-/// the guest: the page is mapped MMIO, so every access is dispatched to the
-/// device instead. It doubles as the device's own register storage.
-std::shared_ptr<BackingMem> GetRegisterMemory();
+/// This is the only place Azahar's own sources name GekkoPAK. The memory core
+/// dispatches MMIO by address and knows nothing about any particular device;
+/// until this runs, no window is claimed and an IO-area mapping is refused
+/// exactly as it was before the overlay. It has to be called explicitly rather
+/// than run from a static initialiser, because citra_core is a static library
+/// and the linker would drop a translation unit nothing references.
+void Install();
 
 /// Returns the device to a freshly powered state.
 void Reset();
