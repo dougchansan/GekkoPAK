@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Load pinned revisions
-        run: grep -E '^[A-Z_]+=' deps.lock >> "$GITHUB_ENV"
+        run: grep -E '^[A-Z0-9_]+=' deps.lock >> "$GITHUB_ENV"
 
       - name: Install build tools
         run: |
