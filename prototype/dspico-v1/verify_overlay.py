@@ -36,7 +36,7 @@ checks = {
         # The two rules the F5 hardware defect came down to: handlers in scratch
         # RAM, and the cartridge-to-console transfer armed in cmd0 from a buffer
         # staged in advance. Losing either silently reintroduces the fault.
-        'GEKKOPAK_IRQ __scratch_y("cpu0")',
+        'GEKKOPAK_IRQ_HOT __scratch_y("cpu0")',
         "void ntrc_gekkopakReadBlockCmd0",
     ],
     # Shared protocol/device core, copied in alongside the adapter.
@@ -66,5 +66,12 @@ overlay = (root / "src/gekkopakNtr.cpp").read_text(errors="replace")
 cmd0 = overlay.split("void ntrc_gekkopakReadBlockCmd0", 1)[1].split("}", 1)[0]
 if "ntrc_beginWrite(pio, kBlockBytes)" not in cmd0:
     raise SystemExit("F5 must arm its data phase in cmd0, not cmd1")
+
+# SCRATCH_Y is a 4 KiB budget shared with DSpico's own handlers, so not every
+# GekkoPAK handler can live there -- but the ones that arm a data phase must.
+for name in ("ntrc_gekkopakReadBlockCmd0", "ntrc_gekkopakWriteBlockCmd1",
+             "ntrc_gekkopakReadRegCmd1"):
+    if f"GEKKOPAK_IRQ_HOT void {name}" not in overlay:
+        raise SystemExit(f"{name} arms a data phase and must be in scratch RAM")
 
 print("DSpico GekkoPAK F0-F5 overlay verification PASS")

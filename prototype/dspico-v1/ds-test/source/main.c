@@ -192,6 +192,23 @@ static void draw_status(void)
     iprintf("upsum %08lX\n", (unsigned long)sProbeUpSum);
     iprintf("legacy %s ck %08lX\n",
             pf(r->legacy_ok), (unsigned long)r->checksum);
+    // Raw data phase before anything that interprets it. A failure here means
+    // the transport, not the protocol, and the numbers say which way.
+    if (r->f5_raw.ok) {
+        iprintf("F5raw PASS %lu/%lu\n",
+                (unsigned long)r->f5_raw.passes, (unsigned long)r->f5_raw.attempts);
+    } else {
+        iprintf("F5raw FAIL %lu/%lu w%lu\n",
+                (unsigned long)r->f5_raw.passes, (unsigned long)r->f5_raw.attempts,
+                (unsigned long)r->f5_raw.first_bad_word);
+        iprintf(" und%lu off%ld\n",
+                (unsigned long)r->f5_raw.undriven_words,
+                (r->f5_raw.magic_offset == GPK_F5_NO_MAGIC)
+                    ? -1L : (long)r->f5_raw.magic_offset);
+        iprintf(" got%08lX exp%08lX\n",
+                (unsigned long)r->f5_raw.actual_word,
+                (unsigned long)r->f5_raw.expected_word);
+    }
     iprintf("F4 %s F5 %s ck %s\n",
             pf(r->f4_ok), pf(r->f5_ok), pf(r->checksum_ok));
     // Block-stage allocation handle: 0 means the stage returned before ever
