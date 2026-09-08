@@ -25,12 +25,24 @@ def main():
     for name in ("gekkopak_ntr.h", "gekkopak_ntr.cpp"):
         shutil.copy2(here / "src/core/hle/device" / name, device_dst / name)
 
+    # The shared GekkoPAK protocol/device core travels with the adapter. It is
+    # the same source the host model and the DSpico firmware compile, which is
+    # what makes the three implementations conformant by construction rather
+    # than by inspection.
+    repo = here.parents[2]
+    core_dst = root / "src/gekkopak"
+    core_dst.mkdir(parents=True, exist_ok=True)
+    for name in ("protocol.h", "device.h", "ntr_register_transport.h"):
+        shutil.copy2(repo / "include/gekkopak" / name, core_dst / name)
+    shutil.copy2(repo / "src/device.cpp", device_dst / "gekkopak_device.cpp")
+
     cmake = root / "src/core/CMakeLists.txt"
     replace_once(
         cmake,
         "    hle/ipc.h\n    hle/ipc_helpers.h\n",
         "    hle/ipc.h\n    hle/ipc_helpers.h\n"
-        "    hle/device/gekkopak_ntr.cpp\n    hle/device/gekkopak_ntr.h\n",
+        "    hle/device/gekkopak_ntr.cpp\n    hle/device/gekkopak_ntr.h\n"
+        "    hle/device/gekkopak_device.cpp\n",
     )
 
     kmem = root / "src/core/hle/kernel/memory.cpp"

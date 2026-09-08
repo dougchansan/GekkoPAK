@@ -19,7 +19,9 @@
 #ifndef GEKKOPAK_DEVICE_H
 #define GEKKOPAK_DEVICE_H
 
-#include "gekkopak/protocol.h"
+// Sibling include, not a rooted one: this header set is copied into foreign
+// source trees (Azahar, DSpico) whose include roots differ.
+#include "protocol.h"
 
 namespace gekkopak {
 
