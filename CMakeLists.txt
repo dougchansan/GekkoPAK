@@ -80,4 +80,24 @@ if(BUILD_TESTING)
         ${GEKKOPAK_TEST_ASSERTS})
     add_test(NAME gekkopak_device_core COMMAND gekkopak_device_tests)
 
+    # Golden wire vectors, replayed against every host-buildable target.
+    add_executable(gekkopak_conformance
+        tests/conformance/conformance_main.cpp
+        tests/conformance/vector_runner.cpp
+        tests/conformance/targets.cpp
+        prototype/dspico-v1/hostshim/dspico_host_shim.cpp
+        prototype/dspico-v1/overlay/src/gekkopakNtr.cpp
+    )
+    target_link_libraries(gekkopak_conformance PRIVATE gekkopak_core)
+    target_include_directories(gekkopak_conformance PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/prototype/dspico-v1/hostshim
+        ${CMAKE_CURRENT_SOURCE_DIR}/prototype/dspico-v1/overlay/src
+    )
+    target_compile_options(gekkopak_conformance PRIVATE ${GEKKOPAK_WARNINGS}
+        ${GEKKOPAK_TEST_ASSERTS})
+    target_compile_definitions(gekkopak_conformance PRIVATE
+        GEKKOPAK_VECTOR_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/conformance/vectors")
+    add_test(NAME gekkopak_conformance COMMAND gekkopak_conformance)
+
 endif()

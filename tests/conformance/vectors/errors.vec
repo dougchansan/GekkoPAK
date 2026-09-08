@@ -1,0 +1,210 @@
+# GekkoPAK golden wire vectors: rejection paths.
+#
+# Every status a client can be handed, plus the discriminator check that keeps
+# GekkoPAK from misreading another cartridge's F0-F5 traffic.
+
+vector bad_discriminator
+desc A command without the "GK" bytes is dropped without touching device state
+
+cmd F1 47 4B 01 00 00 00 01
+data none
+note a real HELLO first, so there is state to disturb
+
+cmd F1 00 4B 7F 00 00 00 02
+data none
+note EXEC of an invalid command, but with byte 1 not 'G'
+
+cmd F1 47 00 7F 00 00 00 03
+data none
+note EXEC of an invalid command, but with byte 2 not 'K'
+
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+note RESULT is still Ok: neither bad command reached the state machine.
+note Had they, it would read BadCommand (1).
+
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 00 00 01 00
+note OUT0 still holds HELLO's protocol version
+end
+
+vector bad_opcode
+desc An unknown high-level command is rejected with BadCommand
+
+cmd F1 47 4B 7F 00 00 00 01
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 01 00 00 00
+note BadCommand = 1
+
+cmd F1 47 4B 00 00 00 00 02
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 01 00 00 00
+note command 0 is not HELLO; the commands are 1-9
+end
+
+vector bad_handle
+desc Handles that were never issued are rejected wherever they are accepted
+
+cmd F0 47 4B 00 00 00 03 E7
+data none
+note ARG0 = 999
+
+cmd F1 47 4B 06 00 00 00 01
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 02 00 00 00
+note POLL: BadHandle = 2
+
+cmd F1 47 4B 07 00 00 00 02
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 02 00 00 00
+note COLLECT: BadHandle
+
+cmd F1 47 4B 08 00 00 00 03
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 02 00 00 00
+note FREE: BadHandle
+
+cmd F1 47 4B 04 00 00 00 04
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 02 00 00 00
+note UPLOAD: BadHandle
+
+cmd F1 47 4B 05 00 00 00 05
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 02 00 00 00
+note SUBMIT: BadHandle
+end
+
+vector allocation_limits
+desc ALLOC refuses zero and refuses more than the pool holds
+
+cmd F0 47 4B 00 00 00 00 00
+data none
+cmd F1 47 4B 03 00 00 00 01
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 03 00 00 00
+note zero bytes: NoMemory = 3
+
+cmd F0 47 4B 00 00 02 00 00
+data none
+cmd F1 47 4B 03 00 00 00 02
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 03 00 00 00
+note 128 KiB against a 64 KiB pool: NoMemory
+
+cmd F0 47 4B 00 00 01 00 00
+data none
+cmd F1 47 4B 03 00 00 00 03
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+note exactly the pool size is accepted
+end
+
+vector collect_before_ready
+desc COLLECT on a job that has not been polled to readiness returns NotReady
+
+cmd F0 47 4B 00 00 00 10 00
+data none
+cmd F1 47 4B 03 00 00 00 01
+data none
+
+cmd F3 47 4B 00 11 22 33 44
+data none
+cmd F3 47 4B 01 55 66 77 88
+data none
+cmd F3 47 4B 02 AA BB CC DD
+data none
+cmd F3 47 4B 03 0B AD F0 0D
+data none
+cmd F0 47 4B 00 00 00 00 01
+data none
+cmd F0 47 4B 04 00 00 00 10
+data none
+cmd F1 47 4B 04 00 00 00 02
+data none
+
+cmd F0 47 4B 00 00 00 00 01
+data none
+cmd F0 47 4B 02 00 03 D0 90
+data none
+cmd F0 47 4B 03 00 00 0D AC
+data none
+cmd F1 47 4B 05 00 00 00 03
+data none
+
+cmd F0 47 4B 00 00 00 00 01
+data none
+cmd F1 47 4B 07 00 00 00 04
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 04 00 00 00
+note NotReady = 4
+end
+
+vector unmapped_register
+desc Reading a staging register outside the defined set returns zero
+
+cmd F1 47 4B 01 00 00 00 01
+data none
+
+cmd F2 47 4B 40 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+note index 0x40 is past the 16 staging registers
+
+cmd F2 47 4B 0F 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+note index 15 exists but is never written by any command
+end
+
+vector sequence_is_advisory
+desc The F1 sequence word is carried but not enforced -- recorded so the gap is explicit
+
+cmd F1 47 4B 01 00 00 00 07
+data none
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 00 00 01 00
+
+cmd F1 47 4B 01 00 00 00 07
+data none
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 00 00 01 00
+note The same sequence number twice, and the second HELLO executes normally.
+note There is no replay rejection and no monotonicity check anywhere in the
+note protocol today. Both the emulator and the firmware behave this way, so
+note this vector documents the current contract rather than a defect; adding
+note enforcement is a wire-spec change, not a bug fix.
+
+cmd F1 47 4B 01 00 00 00 01
+data none
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 00 00 01 00
+note a sequence number going backwards is likewise accepted
+end

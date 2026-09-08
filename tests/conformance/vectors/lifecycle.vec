@@ -1,0 +1,285 @@
+# GekkoPAK golden wire vectors: the F0-F3 bring-up lifecycle.
+#
+# Format
+#   vector <name>          starts a vector; state is reset before it runs
+#   desc <text>            what the vector establishes
+#   cmd <8 hex bytes>      one NTR command, canonical big-endian:
+#                            OP 47 4B II VV VV VV VV
+#   data none|in N|out N   data-phase direction and length in bytes
+#   payload@ <off> <hex>   console -> cartridge bytes (data in)
+#   expect@ <off> <hex>    expected cartridge -> console bytes (data out)
+#   expectcrc <hex>        FNV-1a over the whole response buffer
+#   note <text>            reported on failure
+#   end
+#
+# Register reads come back as four little-endian bytes: the PIO shifts output
+# LSB first, so a u32 arrives at the console in native order.
+#
+# Every target is configured with a 64 KiB pool (0x00010000) so HELLO and
+# GET_CAPS answer identically across the emulator and the firmware.
+
+vector full_lifecycle
+desc The documented bring-up sequence: HELLO GET_CAPS ALLOC UPLOAD SUBMIT POLL POLL COLLECT FREE COMPLETE
+
+# -- 1. HELLO -------------------------------------------------------------
+cmd F1 47 4B 01 00 00 00 01
+data none
+note EXEC HELLO, sequence 1
+
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+note RESULT is Ok
+
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 00 00 01 00
+note OUT0 is protocol version 1.0 (0x00010000)
+
+cmd F2 47 4B 07 00 00 00 00
+data out 4
+expect@ 0 1F 00 00 00
+note OUT1 is capabilities: base 0x0F plus block transport 0x10
+
+cmd F2 47 4B 08 00 00 00 00
+data out 4
+expect@ 0 00 00 01 00
+note OUT2 is the local pool, 64 KiB
+
+cmd F2 47 4B 09 00 00 00 00
+data out 4
+expect@ 0 02 00 00 00
+note OUT3 is the transport generation
+
+# -- 2. GET_CAPS ----------------------------------------------------------
+cmd F1 47 4B 02 00 00 00 02
+data none
+
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 1F 00 00 00
+note capabilities again, this time as OUT0
+
+cmd F2 47 4B 08 00 00 00 00
+data out 4
+expect@ 0 00 00 60 00
+note modeled bus bandwidth, 6 MiB/s = 6291456 B/s -- an assumption, not a measurement
+
+cmd F2 47 4B 09 00 00 00 00
+data out 4
+expect@ 0 19 00 00 00
+note modeled command latency, 25 us -- also an assumption
+
+# -- 3. ALLOC -------------------------------------------------------------
+cmd F0 47 4B 00 00 00 10 00
+data none
+note ARG0 = 4096 bytes
+
+cmd F1 47 4B 03 00 00 00 03
+data none
+
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 01 00 00 00
+note first allocation handle is 1
+
+cmd F2 47 4B 07 00 00 00 00
+data out 4
+expect@ 0 00 10 00 00
+note granted size, 4096
+
+# -- 4. UPLOAD ------------------------------------------------------------
+cmd F3 47 4B 00 11 22 33 44
+data none
+cmd F3 47 4B 01 55 66 77 88
+data none
+cmd F3 47 4B 02 AA BB CC DD
+data none
+cmd F3 47 4B 03 0B AD F0 0D
+data none
+note the 16-byte reference pattern, staged one word at a time
+
+cmd F0 47 4B 00 00 00 00 01
+data none
+cmd F0 47 4B 01 00 00 00 00
+data none
+cmd F0 47 4B 04 00 00 00 10
+data none
+note ARG0 = handle, ARG1 = offset 0, PAYLOAD_LEN = 16
+
+cmd F1 47 4B 04 00 00 00 04
+data none
+
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 10 00 00 00
+note bytes accepted
+
+cmd F2 47 4B 07 00 00 00 00
+data out 4
+expect@ 0 34 B7 69 F2
+note the reference checksum 0xf269b734, confirmed on DSpico silicon. A word
+note swap of the payload would produce 0x899bd1de instead, so this is the
+note wire byte-order canary as well as a data check.
+
+# -- 5. SUBMIT ------------------------------------------------------------
+cmd F0 47 4B 00 00 00 00 01
+data none
+cmd F0 47 4B 01 00 00 00 01
+data none
+cmd F0 47 4B 02 00 03 D0 90
+data none
+cmd F0 47 4B 03 00 00 0D AC
+data none
+note handle 1, kernel 1, 250000 work units, 3500 us software reference
+
+cmd F1 47 4B 05 00 00 00 05
+data none
+
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 01 00 00 00
+note first job handle is 1
+
+cmd F2 47 4B 07 00 00 00 00
+data out 4
+expect@ 0 E2 09 00 00
+note modeled 2530 us: 25 us command + 16 B out + 16 B back + 2500 us compute
+
+# -- 6. POLL, not ready ---------------------------------------------------
+cmd F0 47 4B 00 00 00 00 01
+data none
+cmd F1 47 4B 06 00 00 00 06
+data none
+
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+note not ready yet
+
+cmd F2 47 4B 07 00 00 00 00
+data out 4
+expect@ 0 01 00 00 00
+note one poll still owed
+
+# -- 7. POLL, ready -------------------------------------------------------
+cmd F0 47 4B 00 00 00 00 01
+data none
+cmd F1 47 4B 06 00 00 00 07
+data none
+
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 01 00 00 00
+note ready on the second poll
+
+cmd F2 47 4B 07 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+
+# -- 8. COLLECT -----------------------------------------------------------
+cmd F0 47 4B 00 00 00 00 01
+data none
+cmd F1 47 4B 07 00 00 00 08
+data none
+
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 E2 09 00 00
+note modeled 2530 us
+
+cmd F2 47 4B 07 00 00 00 00
+data out 4
+expect@ 0 67 05 00 00
+note speedup 1383/1000 = 1.383x
+
+cmd F2 47 4B 08 00 00 00 00
+data out 4
+expect@ 0 34 B7 69 F2
+note the job hashed what UPLOAD accepted
+
+cmd F2 47 4B 09 00 00 00 00
+data out 4
+expect@ 0 AC 0D 00 00
+note the software reference time it was given back
+
+# -- 9. FREE --------------------------------------------------------------
+cmd F0 47 4B 00 00 00 00 01
+data none
+cmd F1 47 4B 08 00 00 00 09
+data none
+
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+
+# -- 10. COMPLETE ---------------------------------------------------------
+cmd F1 47 4B 09 00 00 00 0A
+data none
+
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 50 41 53 53
+note COMPLETE acknowledges with 'PASS'
+end
+
+vector free_then_realloc
+desc A freed handle stops resolving and its slot is reissued by the next ALLOC
+
+cmd F0 47 4B 00 00 00 10 00
+data none
+cmd F1 47 4B 03 00 00 00 01
+data none
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 01 00 00 00
+
+cmd F0 47 4B 00 00 00 00 01
+data none
+cmd F1 47 4B 08 00 00 00 02
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+note FREE succeeds
+
+cmd F0 47 4B 00 00 00 00 01
+data none
+cmd F1 47 4B 08 00 00 00 03
+data none
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 02 00 00 00
+note freeing it twice is BadHandle
+
+cmd F0 47 4B 00 00 00 01 00
+data none
+cmd F1 47 4B 03 00 00 00 04
+data none
+cmd F2 47 4B 06 00 00 00 00
+data out 4
+expect@ 0 01 00 00 00
+note handle 1 is deliberately reissued: handles are slot indices, not
+note generation counters, so a stale handle can alias a live allocation.
+note Recorded here so the behaviour is a decision rather than a surprise.
+end
