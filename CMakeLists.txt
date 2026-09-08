@@ -107,4 +107,22 @@ if(BUILD_TESTING)
         GEKKOPAK_VECTOR_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/conformance/vectors")
     add_test(NAME gekkopak_conformance COMMAND gekkopak_conformance)
 
+    # The DSpico F5 data phase, driven through the real firmware handlers on the
+    # host shim. Covers the diagnostic window and the double buffering, neither
+    # of which can appear in a cross-target vector.
+    add_executable(gekkopak_dspico_f5_tests
+        tests/test_dspico_f5.cpp
+        prototype/dspico-v1/hostshim/dspico_host_shim.cpp
+        prototype/dspico-v1/overlay/src/gekkopakNtr.cpp
+    )
+    target_link_libraries(gekkopak_dspico_f5_tests PRIVATE gekkopak_core)
+    target_include_directories(gekkopak_dspico_f5_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/prototype/dspico-v1/hostshim
+        ${CMAKE_CURRENT_SOURCE_DIR}/prototype/dspico-v1/overlay/src
+    )
+    target_compile_options(gekkopak_dspico_f5_tests PRIVATE ${GEKKOPAK_WARNINGS}
+        ${GEKKOPAK_TEST_ASSERTS})
+    add_test(NAME gekkopak_dspico_f5 COMMAND gekkopak_dspico_f5_tests)
+
 endif()

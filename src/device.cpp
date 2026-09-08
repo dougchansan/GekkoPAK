@@ -486,6 +486,49 @@ u32 Device::ProcessDescriptorBlock(const u8* data, std::size_t len) {
     return dropped ? kQueueFull : kOk;
 }
 
+u32 Device::ValidateReadBlock(u8 selector, u32 word) {
+    const u32 offset = word & 0xFFFFu;
+    const u32 len = word >> 16;
+    const u32 status =
+        (selector != kSelectorCompletion || offset != 0 || len == 0 || len > kBlockBytes)
+            ? static_cast<u32>(kBadBlock)
+            : static_cast<u32>(kOk);
+    stage_[kResult] = status;
+    return status;
+}
+
+std::size_t Device::PeekBlock(u8 selector, u32 word, u8* out, std::size_t out_bytes) const {
+    const u32 offset = word & 0xFFFFu;
+    const u32 len = word >> 16;
+    if (out == nullptr || out_bytes == 0) {
+        return 0;
+    }
+    std::memset(out, 0, out_bytes);
+    if (selector != kSelectorCompletion || offset != 0 || len == 0 || len > kBlockBytes) {
+        return 0;
+    }
+
+    const std::size_t limit = len < out_bytes ? len : out_bytes;
+    std::size_t written = 0;
+    u32 index = completion_read_;
+    u32 remaining = completion_count_;
+    while (written + sizeof(CompletionRecordV1) <= limit && remaining != 0) {
+        std::memcpy(out + written, &completions_[index], sizeof(CompletionRecordV1));
+        index = (index + 1) % kCompletionQueueDepth;
+        --remaining;
+        written += sizeof(CompletionRecordV1);
+    }
+    return written;
+}
+
+void Device::DropCompletions(u32 count) {
+    while (count != 0 && completion_count_ != 0) {
+        completion_read_ = (completion_read_ + 1) % kCompletionQueueDepth;
+        --completion_count_;
+        --count;
+    }
+}
+
 u32 Device::WriteBlock(u8 selector, u32 word, const u8* data, std::size_t data_bytes) {
     const u32 len = word & 0xFFFFu;
     if (selector != kSelectorSubmission || data == nullptr || len == 0 || len > kBlockBytes ||

@@ -88,6 +88,21 @@ public:
     // in the RESULT staging register.
     std::size_t ReadBlock(u8 selector, u32 word, u8* out, std::size_t out_bytes);
 
+    // Fills `out` exactly as ReadBlock would but removes nothing from the
+    // queue, so a transport can stage a block before it arms a transfer. The
+    // cartridge has to have the bytes ready before the console starts clocking
+    // them; see prototype/dspico-v1/overlay/src/gekkopakNtr.cpp.
+    std::size_t PeekBlock(u8 selector, u32 word, u8* out, std::size_t out_bytes) const;
+
+    // Discards `count` completion records, after a staged block has been sent.
+    void DropCompletions(u32 count);
+
+    // Applies ReadBlock's validation and leaves the outcome in RESULT, without
+    // reading or consuming anything. A transport that armed its data phase
+    // before it could validate the command uses this to report the verdict
+    // afterwards.
+    u32 ValidateReadBlock(u8 selector, u32 word);
+
     // -----------------------------------------------------------------------
     // Introspection, for adapters and tests
     // -----------------------------------------------------------------------
