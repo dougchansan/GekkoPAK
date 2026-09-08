@@ -69,8 +69,9 @@ if "ntrc_beginWrite(pio, kBlockBytes)" not in cmd0:
 
 # SCRATCH_Y is a 4 KiB budget shared with DSpico's own handlers, so not every
 # GekkoPAK handler can live there -- but the ones that arm a data phase must.
-for name in ("ntrc_gekkopakReadBlockCmd0", "ntrc_gekkopakWriteBlockCmd1",
-             "ntrc_gekkopakReadRegCmd1"):
+# F2 is deliberately absent: a four-byte response has slack, and it was
+# measured good on hardware from flash while F5 failed in the same firmware.
+for name in ("ntrc_gekkopakReadBlockCmd0", "ntrc_gekkopakWriteBlockCmd1"):
     if f"GEKKOPAK_IRQ_HOT void {name}" not in overlay:
         raise SystemExit(f"{name} arms a data phase and must be in scratch RAM")
 

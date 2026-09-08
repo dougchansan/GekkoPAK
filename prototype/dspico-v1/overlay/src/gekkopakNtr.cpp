@@ -47,9 +47,9 @@
 // this is a budget, not a free choice: putting every GekkoPAK handler there
 // overflows the region by ~400 bytes. It is spent where the deadline is hard.
 //
-// GEKKOPAK_IRQ_HOT  - handlers with a deadline. Every cmd0 (the first code to
-//                     run after an idle bus, and where a data phase is armed)
-//                     plus the cmd1 handlers that arm a transfer.
+// GEKKOPAK_IRQ_HOT  - handlers with a hard deadline. Every cmd0 (the first code
+//                     to run after an idle bus, and where a block data phase is
+//                     armed) plus F4's cmd1, which arms a 512-byte read.
 // GEKKOPAK_IRQ_COLD - handlers that release the bus in their first two inlined
 //                     statements and only then call into the device. Their own
 //                     placement buys little, because the work they go on to do
@@ -241,7 +241,7 @@ extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakReadRegCmd0(ntr_rom_emu_t* romEmu,
     finishCmd0(romEmu);
 }
 
-extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakReadRegCmd1(ntr_rom_emu_t* romEmu, u32, pio_hw_t* pio) {
+extern "C" GEKKOPAK_IRQ_COLD void ntrc_gekkopakReadRegCmd1(ntr_rom_emu_t* romEmu, u32, pio_hw_t* pio) {
     u32 value = 0;
     if (commandMatches(romEmu, gp::kWireReadReg)) {
         const u8 index = commandIndex(romEmu);
@@ -259,9 +259,11 @@ extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakReadRegCmd1(ntr_rom_emu_t* romEmu,
         else
             value = sDevice.ReadReg(index);
     }
-    // Four bytes has enough slack to be armed here -- DSpico's own USB and R4
-    // status handlers do the same -- but the response still goes out before
-    // anything else happens.
+    // Four bytes has enough slack to be armed from cmd1, and enough to tolerate
+    // running from flash: F2 register reads were measured good on hardware
+    // (31/32 at latency 4, 32/32 at 8 and above) while the 512-byte F5 in the
+    // same firmware failed every time. So this one pays for the scratch-RAM
+    // budget that the block handlers need.
     ntrc_beginWrite(pio, 4);
     ntrc_writeWord(pio, value);
     ntrc_finishGameNoScrambleCmd1(romEmu);
