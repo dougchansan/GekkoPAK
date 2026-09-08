@@ -124,9 +124,26 @@ vendored; the overlay is a copy-in patch of two adapter files plus the shared
 core.
 
 The host shim reproduces the cmd0/cmd1 dispatch, the PIO FIFO directive
-protocol, the read-payload callback, the DMA response and the wire byte order.
-It does not reproduce timing, the IRQ, scrambling, or the dropped-first-
-transaction behaviour. Those are properties of the silicon.
+protocol, the read-payload callback, the DMA response, the wire byte order, and
+the declared-versus-supplied data-phase length. It does not reproduce timing,
+the IRQ, scrambling, or the dropped-first-transaction behaviour. Those are
+properties of the silicon.
+
+### The one remaining hand-maintained copy
+
+`prototype/dspico-v1/ds-test/include/gekkopak_ntr.h` is the DS-side client. It
+is C, built with devkitARM, and cannot include the shared C++ header, so it
+restates the opcodes, the block-word encodings and the `GKD1`/`GKC1` layouts by
+hand. All of them were checked against `include/gekkopak/protocol.h` field for
+field, and the structs now carry `_Static_assert`s on their 64-byte size and on
+eight descriptors filling a block -- because a padding change there would not
+fail cleanly, it would shift the record, which is indistinguishable on-screen
+from a bus fault.
+
+Those assertions fire only when the DS application is built, and that build is
+not in CI: it needs devkitARM and produces a `.nds` nobody can run without
+hardware. So this file is the weakest link in the conformance chain, and worth
+watching whenever the block ABI changes.
 
 ## The F5 hardware fault
 

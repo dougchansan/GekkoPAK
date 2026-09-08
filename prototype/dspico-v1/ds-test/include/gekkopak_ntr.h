@@ -118,6 +118,21 @@ typedef struct {
     u32 reserved[5];
 } gpk_completion_t;
 
+// These layouts are the console's half of the block ABI defined in
+// include/gekkopak/protocol.h. If they ever stop being exactly 64 bytes the
+// records do not fail cleanly -- they arrive shifted, which is indistinguishable
+// on-screen from a bus fault. Fail the build instead.
+#if defined(__cplusplus)
+#define GPK_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#else
+#define GPK_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+#endif
+
+GPK_STATIC_ASSERT(sizeof(gpk_descriptor_t) == 64, "GKD1 descriptor must be 64 bytes");
+GPK_STATIC_ASSERT(sizeof(gpk_completion_t) == 64, "GKC1 completion must be 64 bytes");
+GPK_STATIC_ASSERT(GPK_BLOCK_BYTES / sizeof(gpk_descriptor_t) == 8,
+                  "eight descriptors must fill one 512-byte block exactly");
+
 // Bus latency, in card-clock cycles, inserted before the data phase.
 // docs/commands.md requires >=4 for cart->console and >=8 for console->cart.
 // These are the knobs that dominate measured per-transaction cost; they are
