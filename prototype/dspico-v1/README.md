@@ -1,6 +1,15 @@
 # GekkoPAK DSpico F0-F5 overlay
 
-This directory is the physical-transport bridge for GekkoPAK Protocol v1. It overlays the upstream `LNH-team/dspico-firmware` `develop` tree instead of maintaining a hard fork.
+This directory is the physical-transport bridge for GekkoPAK Protocol v1. It
+overlays a pinned revision of the upstream `LNH-team/dspico-firmware` tree
+instead of maintaining a hard fork. The pin lives in `deps.lock`; the current
+one is `472c9d8e9957ad18df367f14b9cc337b9b887e65`, the revision flashed to real
+hardware in `docs/HARDWARE_DSPICO_V1.md`.
+
+`overlay/src/gekkopakNtr.cpp` is a transport adapter, not an implementation of
+the protocol. It owns PIO decode, the data phases and the staging buffers; the
+state machine is the shared `gekkopak::Device` that the emulator also runs, and
+`apply_overlay.py` copies that core into the firmware tree alongside it.
 
 ## What it installs
 
@@ -17,7 +26,8 @@ The overlay claims the currently-unused unscrambled-game command slots F0-F5:
 
 F6 remains DSpico's existing SD-write command. E3-E5 and E8-EB remain untouched.
 
-The payload ABI matches the emulator model:
+The payload ABI does not merely match the emulator model -- it is the same
+source file:
 
 - `GKD1` submission descriptor: 64 bytes
 - `GKC1` completion record: 64 bytes
@@ -32,11 +42,29 @@ The default shim reserves 64 KiB of RP2040 SRAM for GekkoPAK-local bring-up memo
 ```bash
 git clone https://github.com/LNH-team/dspico-firmware.git
 cd dspico-firmware
-git checkout develop
+git checkout 472c9d8e9957ad18df367f14b9cc337b9b887e65
 cd ..
 python3 GekkoPAK/prototype/dspico-v1/apply_overlay.py dspico-firmware
 python3 GekkoPAK/prototype/dspico-v1/verify_overlay.py dspico-firmware
 ```
+
+## Running the firmware handlers without hardware
+
+`hostshim/` compiles `overlay/src/gekkopakNtr.cpp` -- unmodified, the same file
+the RP2040 builds -- against a stand-in for the DSpico headers, so the golden
+wire vectors can be replayed through the real handler code on any host:
+
+```bash
+cmake -S ../.. -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target gekkopak_conformance
+./build/gekkopak_conformance      # dspico-shim is one of the three targets
+```
+
+The shim models the cmd0/cmd1 dispatch, the PIO FIFO directive protocol, the
+read-payload callback, the DMA response, and the wire byte order the PIO shift
+directions imply. It does not model timing, the IRQ, scrambling, or the
+dropped-first-transaction-after-a-pause behaviour; those are properties of the
+silicon and still need a console.
 
 Then build DSpico normally with the Pico SDK.
 

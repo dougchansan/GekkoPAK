@@ -48,7 +48,6 @@ target_include_directories(gekkopak
 
 target_compile_features(gekkopak PUBLIC cxx_std_17)
 target_compile_options(gekkopak PRIVATE ${GEKKOPAK_WARNINGS})
-target_link_libraries(gekkopak PUBLIC gekkopak_core)
 
 add_executable(gekkopak_sim
     sim/main.cpp
