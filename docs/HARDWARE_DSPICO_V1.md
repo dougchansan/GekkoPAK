@@ -92,6 +92,84 @@ correct record begins `47 4B 43 31 01 00 00 00`.
 
 The two highest-latency matrix rows (`lat32`, `lat63`) still return `FFFFFFFF`
 counters, so those settings break the readback entirely rather than helping.
+### F5 root cause: the handler was late, and running from flash
+
+Both open faults -- the F5 readback and the dropped first transaction -- came
+down to the same thing, and neither is on the bus. That is why sweeping every
+bus parameter found nothing: latency from 4 to 63, EXEC settle from 0 to 1024,
+priming, meaningful-byte counts, inline against pre-uploaded input. All of it
+was measuring the wrong layer.
+
+**The handlers ran from XIP flash.** Every one of DSpico's 22 cartridge IRQ
+handlers is marked `__scratch_y("cpu0")`, which places it in SRAM. None of
+GekkoPAK's were, so they executed from flash through the XIP cache. A miss
+costs far more than the ~4.8 us a 32-bit word takes at the 6.7 MHz card clock,
+and the console does not wait.
+
+That also explains the dropped-first-transaction behaviour exactly: an idle bus
+means an idle cache, so the first handler after a pause is slow and its
+transaction is lost, while every one after it hits the cache and works. A code
+fetch stall, not a timing margin -- which is precisely why no bus parameter
+moved it.
+
+**The transfer was armed too late, from a buffer built too late.** F5 called
+`ntrc_beginWrite()` and `ntrc_dmaToBus()` in the *cmd1* handler, after building
+the completion block. Every DSpico path that drives 512 bytes to the console
+arms in *cmd0* and DMAs from a buffer that earlier, non-critical code already
+filled -- the SD read, the USB read, the R4 save read and the ROM read page all
+do exactly that. Four bytes has enough slack to be armed in cmd1, which is why
+F2 register reads worked and F5 never did.
+
+The recorded symptom fits both: `GKC1` arriving at byte offset 12 behind
+**three words of `0xFFFFFFFF`**. `0xFF` is an undriven bus. The console was
+clocking the data phase before the cartridge had armed anything, and lost
+exactly as many words as the handler took to get there.
+
+#### The fix
+
+- The handlers that have a deadline are in scratch RAM. `SCRATCH_Y` is 4 KiB
+  and DSpico's own handlers already fill most of it, so this is a budget:
+  putting all of GekkoPAK's there overflows the region by 392 bytes. It is
+  spent on every cmd0 handler -- the first code to run on an idle bus, and
+  where a block data phase is armed -- plus F4's cmd1. F2 stays in flash
+  because a four-byte response has slack, and the hardware already proved it
+  (31/32 at latency 4, 32/32 above, in the same firmware where every F5 failed).
+- F5 arms in cmd0, unconditionally, and DMAs a completion block staged outside
+  the IRQ path. The selector is in the low byte of cmd0, so the source can be
+  chosen without waiting for the value word; cmd1 delivers the verdict on the
+  command afterwards.
+- The staging is double-buffered, like DSpico's own SD read path. The host shim
+  caught that restaging in cmd1 rewrites the buffer the DMA is still streaming.
+- Staging uses a non-consuming peek, so an F2 event-depth check still sees a
+  completion that has been staged but not yet sent.
+
+`verify_overlay.py` asserts both rules structurally, so neither can regress
+silently.
+
+**Status: fixed in firmware, not yet confirmed on hardware.** The reasoning is
+from the DSpico sources and the recorded symptom; the console run that closes it
+has not happened yet.
+
+### Raw F5 diagnostic
+
+F5 selector `0x7E` returns a fixed 512-byte pattern with no allocator, job queue
+or completion queue involved:
+
+```
+word[i] = 0xF5 << 24 | i << 16 | (i ^ 0x7F) << 8 | (i + 0xA5)
+```
+
+Each word carries its own index twice under a constant tag, so word order, byte
+order, truncation, a stale buffer, a repeated FIFO word and any starting offset
+all look different from each other and from a correct read. The test application
+runs it before anything that interprets a completion record, and reports the
+first mismatching word, how many leading words were undriven, and where the
+pattern actually starts.
+
+That separates the two questions the campaign has to keep apart: *can the
+cartridge put 512 known bytes on the wire*, and *is the protocol above it
+right*.
+
 ### The first transaction after a pause is dropped
 
 The single most important hardware behaviour found, and it is not in any
@@ -371,6 +449,48 @@ once the console run completes; the on-device run also writes
 not copied into the results files — the entire purpose of this exercise is to
 replace them, so a placeholder that looks like data would be worse than an
 empty table.
+
+## Building the artefacts
+
+Both builds are containerised or pinned, so a result can be traced to an exact
+input. Nothing here needs a hand-configured toolchain.
+
+**Test ROM** -- devkitARM is not installed on the host and should not be:
+
+```bash
+./prototype/dspico-v1/build_ds_test.sh
+```
+
+Uses `devkitpro/devkitarm:latest`; override with `GEKKOPAK_DEVKITARM_IMAGE` to
+reproduce an older result. The application needs calico (`pmMainLoop`), which
+the older tagged images predate.
+
+**Firmware** -- needs the prepared boot ROM from the original bring-up, because
+the Blowfish tables it embeds are Nintendo copyrighted data and are never stored
+in this repository:
+
+```bash
+./prototype/dspico-v1/build_firmware.sh <workdir> <gekkopak-repo> <default.nds>
+```
+
+`DSPICO_REF` is pinned to the `deps.lock` commit rather than tracking
+`develop`. Diagnosing a hardware defect against a moving upstream is how a fix
+gets attributed to the wrong change.
+
+### This campaign's artefacts
+
+| Artefact | Value |
+|---|---|
+| `gekkopak_test.nds` | `8cec0e1f066cbd56bcbe679795f7446105cdf3a05aae29c86d4a18d6518234c6` (259072 B) |
+| devkitARM image | `devkitpro/devkitarm@sha256:116afba8df8453961de2936ffab20dd441edf4d682856c1ec8b0e53d7ed0bbf5` |
+| devkitARM | 16.1.0 |
+| DSpico firmware | `472c9d8e9957ad18df367f14b9cc337b9b887e65` (unchanged; the overlay carries the fix) |
+| Pico SDK | `6a7db34ff63345a7badec79ebea3aaef1712f374` |
+| RP2040 cross-build | green in CI with the scratch-RAM placement |
+
+The firmware UF2 is not listed: it embeds the user-supplied boot ROM, so its
+hash is specific to the machine that built it and is recorded with the results
+of a run rather than here.
 
 ## Running it
 

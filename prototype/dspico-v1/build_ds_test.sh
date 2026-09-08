@@ -15,10 +15,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 APP="$HERE/ds-test"
 OUT="${1:-$HERE/build/ds-test}"
 
-# devkitpro/devkitarm. Pinned to a digest rather than :latest so the same
-# command produces the same binary; docs/HARDWARE_DSPICO_V1.md records the
-# devkitARM version that goes with it.
-IMAGE="${GEKKOPAK_DEVKITARM_IMAGE:-devkitpro/devkitarm:20240511}"
+# devkitpro/devkitarm. The application needs calico (pmMainLoop), which older
+# tagged images predate. docs/HARDWARE_DSPICO_V1.md records the exact toolchain
+# version and image digest a given result was built with; override the image
+# with GEKKOPAK_DEVKITARM_IMAGE to reproduce an older one.
+IMAGE="${GEKKOPAK_DEVKITARM_IMAGE:-devkitpro/devkitarm:latest}"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "docker not found. Install Docker, or set GEKKOPAK_DEVKITARM_IMAGE and" >&2

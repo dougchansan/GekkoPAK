@@ -13,7 +13,10 @@ WORK=${1:?workdir}
 GEKKOPAK=${2:?path to GekkoPAK checkout}
 ROM=${3:?path to prepared default.nds}
 
-DSPICO_REF=${DSPICO_REF:-develop}
+# Pinned, not a branch. Diagnosing a hardware defect against a moving
+# upstream is how a fix gets attributed to the wrong change; deps.lock is
+# the single source of truth for which revision a result belongs to.
+DSPICO_REF=${DSPICO_REF:-472c9d8e9957ad18df367f14b9cc337b9b887e65}
 PICO_SDK_REF=${PICO_SDK_REF:-6a7db34ff63345a7badec79ebea3aaef1712f374}
 
 mkdir -p "$WORK"
