@@ -68,6 +68,8 @@ extern "C" {
 #define GPK_CAP_BLOCK_XPORT (1u << 4)
 
 #define GPK_BLOCK_BYTES      512
+// Retries allowed for one F4 submission before it is called a failure.
+#define GPK_F4_MAX_ATTEMPTS  8
 #define GPK_DESCRIPTOR_BYTES 64
 #define GPK_COMPLETION_BYTES 64
 #define GPK_MAX_BATCH        (GPK_BLOCK_BYTES / GPK_DESCRIPTOR_BYTES)

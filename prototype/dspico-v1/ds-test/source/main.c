@@ -245,6 +245,10 @@ static void log_details(void)
         (unsigned long)r->latency_read, (unsigned long)r->latency_write);
     LOG("legacy F0-F3 %s (%08lX)\n", pf(r->legacy_ok), (unsigned long)r->legacy_checksum);
     LOG("event depth: %lu\n", (unsigned long)r->event_depth);
+    // How many F4 attempts this needed. 1 means first time; higher is
+    // warm-up; 0 means it never queued at all.
+    LOG("F4 attempts: %lu of %d\n",
+        (unsigned long)r->f4_attempts, GPK_F4_MAX_ATTEMPTS);
     LOG("checksum   : %08lX exp %08lX\n",
         (unsigned long)r->checksum, (unsigned long)GPK_EXPECTED_CHECKSUM);
     // Raw head of the F5 completion block. F4 now works, but the GKC1 record
@@ -903,7 +907,8 @@ int main(void)
                     LOG("lat%-2lu %-5s ", (unsigned long)fv[i].latency,
                         fv[i].name);
                     if (fv[i].depth == 0)
-                        LOG("F4 queued none\n");
+                        LOG("F4 queued none in %d\n",
+                            GPK_F4_MAX_ATTEMPTS);
                     else if (fv[i].magic_offset == GPK_F5_NO_MAGIC)
                         LOG("d%lu GKC1 absent w0 %08lX\n",
                             (unsigned long)fv[i].depth,

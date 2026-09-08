@@ -161,8 +161,17 @@ static bool gpk_stage_block_roundtrip(gpk_report_t *r)
     // which is what "event depth 0" reported. Priming with a cheap read and
     // resending on an empty queue covers it. Each attempt uses its own sequence
     // number so a completion can be attributed to the attempt that produced it.
+    // Eight attempts, not two, and record which one worked.
+    //
+    // Two attempts was a guess, and when it failed the response was to power
+    // cycle and try again - which is a ritual, not a measurement. F4 has been
+    // seen to queue reliably in one boot and not at all in the next, so the
+    // useful question is how many attempts this cartridge actually needs. If
+    // the answer is consistently 1, the retry is dead code; if it climbs, that
+    // is warm-up behaviour with a number attached to it.
     r->event_depth = 0;
-    for (u32 attempt = 0; attempt < 2 && r->event_depth == 0; attempt++) {
+    r->f4_attempts = 0;
+    for (u32 attempt = 0; attempt < GPK_F4_MAX_ATTEMPTS && r->event_depth == 0; attempt++) {
         ((gpk_descriptor_t *)sBlock)->sequence = 1 + attempt;
 
         // Prime with a block write, not a register read.
@@ -189,6 +198,8 @@ static bool gpk_stage_block_roundtrip(gpk_report_t *r)
                 break;
             swiDelay(500);
         }
+        if (r->event_depth != 0)
+            r->f4_attempts = attempt + 1;
     }
     if (r->event_depth == 0) {
         r->f5_ok = false;
@@ -212,7 +223,7 @@ static bool gpk_stage_block_roundtrip(gpk_report_t *r)
     r->f5_ok = (c->magic == GPK_COMP_MAGIC) &&
                (c->version == GPK_BLOCK_VERSION) &&
                (c->status == GPK_OK) &&
-               (c->sequence == 1 || c->sequence == 2) &&
+               (c->sequence >= 1 && c->sequence <= GPK_F4_MAX_ATTEMPTS) &&
                (c->job_handle != 0);
     r->checksum    = c->checksum;
     r->checksum_ok = (c->checksum == GPK_EXPECTED_CHECKSUM);
@@ -445,6 +456,7 @@ u32 gpk_f5_matrix(gpk_f5_variant_t *out)
             memset(&rep, 0, sizeof(rep));
             (void)gpk_stage_block_roundtrip(&rep);
             v->depth = rep.event_depth;
+            v->attempts = rep.f4_attempts;
 
             v->head0 = *(const u32 *)sReadBlock;
             v->magic_offset = GPK_F5_NO_MAGIC;

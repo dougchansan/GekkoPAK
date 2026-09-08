@@ -53,6 +53,9 @@ typedef struct {
     u32   f4_enter, f4_accepted, f4_complete, f4_parsed;
     // Allocation handle obtained by the block stage; 0 means it never got that far.
     u32   block_handle;
+    // Which F4 attempt queued a completion, 1-based; 0 if none did.
+    // Turns "flaky, power-cycle it" into a number that can be tracked.
+    u32   f4_attempts;
     // First 32 bytes of the F5 completion block, so the record layout can be
     // inspected rather than inferred. GKC1 should begin 47 4B 43 31 01 00 00 00.
     u8    f5_head[32];
@@ -102,6 +105,7 @@ typedef struct {
     u32 magic_offset;  // byte offset of 'GKC1', or GPK_F5_NO_MAGIC
     u32 head0;         // first word as received, for context
     u32 depth;         // completions queued by this variant's F4
+    u32 attempts;      // F4 attempts needed, 0 if none ever queued
 } gpk_f5_variant_t;
 
 #define GPK_F5_NO_MAGIC 0xFFFFFFFFu
