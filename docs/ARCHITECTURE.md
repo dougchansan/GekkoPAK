@@ -55,6 +55,46 @@ Host simulator    Azahar          real CTR
 
 `libgekkopak` owns capabilities, buffers, jobs, synchronization primitives, errors, and profiling. It must not expose FPGA registers or DSpico-specific packets to the recomp runtime.
 
+### 3.1 Device side: one core, three adapters
+
+The cartridge side mirrors that separation. The protocol state machine is a
+single implementation, and each transport is a thin adapter over it:
+
+```text
+GekkoCTR / ARM guest / DS test client
+                |
+             NTRCARD
+                |
+    +-----------+-----------+
+    |           |           |
+  host      Azahar       DSpico
+ adapter    adapter      adapter
+    |           |           |
+    +-----------+-----------+
+                |
+      shared GekkoPAK device core
+      include/gekkopak/protocol.h
+      include/gekkopak/device.h
+      src/device.cpp
+```
+
+The core owns the protocol version and capability flags, the staging registers,
+command sequencing, allocation and job handles, persistent device-local memory,
+SUBMIT/POLL/COLLECT/FREE, the F4/F5 block semantics and their ABI, the `GK`
+discriminator check, and the status codes. It depends on `<cstdint>` and
+`<cstring>` and nothing else -- not Azahar, not the Pico SDK, not PIO, not
+libretro, not the CTR SDK.
+
+Adapters own the bus and nothing else: reading and writing cartridge command
+words, supplying and requesting payload data, ROMCNT/FIFO handling, Azahar
+memory mapping, PIO and DMA. Each converts its native representation into
+`(opcode, index, word)` plus a data-phase buffer, calls the core, and converts
+the response back.
+
+This was three separate implementations until Phase 2.5, and they had drifted.
+See `docs/CONFORMANCE_ARCHITECTURE.md` for the survey that motivated the split
+and `docs/CONFORMANCE_RESULTS.md` for what the golden vectors now prove.
+
 ## 4. Backends
 
 ### 4.1 Null/software backend

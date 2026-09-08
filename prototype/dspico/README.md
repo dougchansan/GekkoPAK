@@ -126,17 +126,25 @@ Do not execute large DSP/vector kernels in the PIO IRQ path.
 
 ## Device state shared with Azahar
 
-The firmware should initially preserve the exact deterministic semantics already exercised by the Azahar model:
+This is no longer a matter of the firmware preserving semantics by hand. The
+firmware and the emulator compile the *same* device core --
+`include/gekkopak/{protocol,device}.h` and `src/device.cpp`, copied into the
+DSpico tree by `prototype/dspico-v1/apply_overlay.py` -- so they cannot drift:
 
 - protocol `0x00010000`
-- capabilities `0x0000000f`
-- 32 MiB modeled local-memory target (actual RP prototype may expose less and report it honestly)
+- capabilities `0x0000001f` (base `0x0f` plus block transport `0x10`)
+- local memory reported honestly: 32 MiB in the emulator, 64 KiB on the RP2040
 - persistent allocation handles
 - job handles
 - SUBMIT/POLL/COLLECT/FREE
-- same 16-byte test payload checksum `0xf269b734`
+- the same 16-byte test payload checksum `0xf269b734`
 
-This gives us a byte-for-byte conformance test between emulator and hardware.
+The byte-for-byte conformance test is `tests/conformance/`, which replays golden
+wire vectors against the firmware handlers on a host shim and against both
+emulator paths, and fails if any two disagree.
+
+Implementation status: done. See `prototype/dspico-v1/` for the overlay and the
+host shim, and `docs/CONFORMANCE_RESULTS.md` for results.
 
 ## Bring-up sequence
 

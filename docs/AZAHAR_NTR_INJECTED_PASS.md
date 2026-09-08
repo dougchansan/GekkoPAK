@@ -44,6 +44,10 @@ NTR E2E PASS
 clean shutdown
 ```
 
+That capability word is `0x0000000f`, the pre-block-transport value. Adding
+F4/F5 set bit 4, so current runs report `0x0000001f`. The rest of the baseline
+is unchanged. See `docs/CONFORMANCE_RESULTS.md`.
+
 Exit status: `0`.
 
 ## What this proves

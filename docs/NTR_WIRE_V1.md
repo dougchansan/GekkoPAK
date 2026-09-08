@@ -1,6 +1,13 @@
 # GekkoPAK NTR wire protocol v1
 
-Status: design target after the F0-F3 bring-up transport is proven end-to-end.
+Status: implemented. F0-F5 run on the host model, on the Azahar core device
+and in DSpico RP2040 firmware, all three driving one shared device core, and
+are pinned by the golden vectors in `tests/conformance/vectors/`. F4 is
+confirmed on real DSpico hardware; F5 readback is not (see
+`docs/CONFORMANCE_RESULTS.md`).
+
+Where this document and the implementations disagreed, the implementations
+won and the document was corrected. Those corrections are marked below.
 
 ## Why v1 is needed
 
@@ -34,35 +41,52 @@ F4 47 4B QQ LL LL FF FF
 
 Console-to-cartridge payload transfer.
 
-- `QQ`: destination queue/buffer selector.
-- `LLLL`: valid payload length, 0-512 bytes.
-- `FFFF`: flags / sequence bits.
-- Data phase: up to 512 bytes written by the console to the cartridge.
+- `QQ`: destination queue/buffer selector, in the command's index byte.
+- `LLLL`: meaningful payload length, 1-512 bytes (bits 15:0 of the value word).
+- `FFFF`: reserved. No flag bits are defined or honoured yet.
+- Data phase: always a full 512 bytes, regardless of how many are meaningful.
 
-Initial selectors:
+The data phase is always 512 bytes because the NTR block-size field only
+encodes 4 bytes or 512 and up. There is no 64- or 128-byte bus transfer, so a
+"64-byte payload" is either sixteen 4-byte `F3` transactions or one 512-byte
+`F4` with 64 meaningful bytes.
+
+Selectors, as implemented:
 
 - `0`: command/descriptor queue.
-- `1`: bulk upload staging buffer A.
-- `2`: bulk upload staging buffer B.
+
+Any other selector returns `BadBlock`. Bulk upload staging buffers are not
+implemented; inline input inside the descriptor block covers the cases so far.
 
 ### F5 - READ_BLOCK
 
 ```text
-F5 47 4B QQ OO OO LL LL
+F5 47 4B QQ LL LL OO OO
 ```
 
 Cartridge-to-console payload transfer.
 
 - `QQ`: source queue/buffer selector.
-- `OOOO`: source offset or result slot.
-- `LLLL`: requested valid length, 0-512 bytes.
-- Data phase: a 512-byte cartridge response, with only `LLLL` bytes considered valid.
+- `LLLL`: requested valid length, 1-512 bytes (bits 31:16 of the value word).
+- `OOOO`: source offset (bits 15:0). Only 0 is accepted today; a non-zero
+  offset returns `BadBlock`.
+- Data phase: a full 512 bytes, with only `LLLL` bytes considered valid. An
+  empty queue returns a zeroed block rather than stale data.
 
-Initial selectors:
+**Corrected.** This document originally gave the two halves the other way
+round. Both the Azahar device and the DSpico firmware were written to
+`word = (length << 16) | offset`, they agree with each other, and they are what
+ran on hardware -- so the specification was wrong, not the code. The layout is
+now pinned by `EncodeReadBlockWord()` in `include/gekkopak/protocol.h` and by
+the `f4_f5_single` golden vector.
 
-- `0`: completion/result queue.
-- `1`: bulk download buffer A.
-- `2`: bulk download buffer B.
+Selectors, as implemented:
+
+- `1`: completion/result queue.
+
+Any other selector returns `BadBlock`. The bulk download buffers this document
+originally reserved as selectors 1 and 2 do not exist; when they are added they
+take selectors 2 and 3, because 1 is now the completion queue on hardware.
 
 ### F1 - KICK
 
@@ -72,6 +96,14 @@ The existing F1 execute opcode remains available for explicit queue kicks and de
 
 Retain the existing 4-byte response path for very small status values. This avoids reading a full 512-byte block just to learn whether a completion is available.
 
+Index `0xFE` is the completion-queue depth. It is the compact event read: a
+client polls it for four bytes and only spends a 512-byte `F5` once something
+is actually waiting.
+
+Indices `0xF0`-`0xF3` are a DSpico-local diagnostic window carrying the `F4`
+instrumentation counters. They are firmware-specific, not part of the protocol,
+and the emulator does not implement them.
+
 ## Descriptor block
 
 A 512-byte command block should contain a small header followed by one or more fixed-size descriptors. A 64-byte descriptor gives eight jobs per NTR block and leaves enough room for versioning and future DMA/scatter fields.
@@ -79,7 +111,7 @@ A 512-byte command block should contain a small header followed by one or more f
 Proposed descriptor fields:
 
 ```text
-u32 magic              // 'GKJB'
+u32 magic              // 'GKD1' (0x31444B47), little-endian
 u16 version
 u16 opcode
 u32 sequence
@@ -98,7 +130,22 @@ u32 arg2
 u32 arg3
 ```
 
-The exact ABI remains provisional until GekkoCTR workload traces tell us which fields are actually useful.
+**Corrected.** The magic is `GKD1`, not the `GKJB` this document first
+proposed; completions use `GKC1`. Both are 64 bytes, both are little-endian and
+byte-transparent on the wire, and both are pinned by `static_assert` in
+`include/gekkopak/protocol.h`.
+
+`version` must be 1 and `opcode` must be 1 (submit); anything else is
+`BadDescriptor`. `flags` bit 0 is `INLINE_INPUT`: the descriptor is followed
+immediately in the block by `input_length` bytes of input data. `arg0` carries
+the software reference time in microseconds, which is what the reported speedup
+is measured against.
+
+A descriptor whose `magic` is zero terminates the block, so a partially filled
+512-byte block does not need a count field.
+
+The exact ABI remains provisional until GekkoCTR workload traces tell us which
+fields are actually useful.
 
 ## Persistent-memory flow
 
@@ -131,14 +178,69 @@ A v1 steady-state path can target:
 
 That reduces the normal critical path from about 21 command transactions to roughly 2-4 while simultaneously increasing useful bytes per transfer.
 
-## Emulator implementation plan
+## Implementation status
 
-1. Finish the current F0-F3 Azahar NTR E2E test.
-2. Add F4/F5 data-phase semantics to the standalone NTR model.
-3. Add the same commands to the Azahar register-backed cartridge device.
-4. Extend the ARM guest with 512-byte write/read transactions.
-5. Compare transfer count and modeled critical-path time against the F0-F3 baseline.
-6. Port the exact F4/F5 handlers to DSpico/RP2350 firmware.
+1. F0-F3 Azahar NTR E2E test -- done.
+2. F4/F5 data-phase semantics in the standalone NTR model -- done.
+3. The same commands in the Azahar register-backed cartridge device -- done.
+4. The ARM guest using 512-byte write/read transactions -- done.
+5. Transfer count and modeled critical path against the F0-F3 baseline -- done:
+   21 transfers to 3, and 530.1 us of modeled bus time to 238.4 us.
+6. The same F4/F5 handlers in DSpico/RP2350 firmware -- done, and they are the
+   same source file, not a port. All three transports drive one shared device
+   core and are checked against each other by
+   `tests/conformance/vectors/`.
+
+What is not done is hardware validation of F5; see
+`docs/CONFORMANCE_RESULTS.md`.
+
+## Wire byte order
+
+Settled against the DSpico PIO configuration rather than convention:
+
+- `sm_config_set_in_shift(&c, false, true, 32)` shifts left, so the first byte
+  received lands in bits 31:24. **The 8-byte command header is big-endian:**
+  `OP 47 4B II VV VV VV VV`, value word MSB first.
+- `sm_config_set_out_shift(&c, true, true, 32)` shifts right, so cartridge to
+  console words go out LSB first and memory order equals wire order.
+- `ntrCardIrq.S` applies `rev` to each received payload word before storing.
+
+Net result: **the command header is big-endian; payloads are byte-transparent
+in both directions.** `DecodeCommand()` and `EncodeCommand()` in
+`include/gekkopak/protocol.h` are the only place this is expressed.
+
+The 16-byte reference pattern
+
+```text
+44 33 22 11  88 77 66 55  DD CC BB AA  0D F0 AD 0B
+```
+
+hashes under FNV-1a to `0xf269b734` when laid into the block in written order,
+and to `0x899bd1de` if word-swapped. Every conformance path asserts
+`0xf269b734`, so a byte-order regression fails loudly rather than silently.
+
+## Sequencing
+
+`F1` carries a 32-bit sequence word. It is **advisory**: the device stores
+nothing, rejects nothing, and enforces no ordering. Replaying a sequence
+number, or sending one that goes backwards, is accepted on every target. The
+`sequence_is_advisory` golden vector records this so it is a known contract
+rather than an assumption.
+
+If replay rejection or ordering enforcement is wanted, it is a wire-spec change
+and needs a capability bit, because existing clients do not maintain a
+monotonic counter across a reset.
+
+## Handles
+
+Allocation handles are slot indices, `slot + 1`, over a fixed table of 16. A
+freed handle can therefore be reissued by the next `ALLOC`, and a stale handle
+can alias a live allocation. Job handles are monotonic within a session and are
+not reused.
+
+This is deliberate -- it is what fits an RP2040 -- but it means a client must
+not hold a handle across a `FREE`. Generation-tagged handles would fix it at
+the cost of 8 bits of handle space.
 
 ## Hardware note
 
