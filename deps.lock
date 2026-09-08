@@ -1,0 +1,23 @@
+# Pinned external revisions.
+#
+# Every GekkoPAK conformance gate builds against an exact upstream revision.
+# Tracking a branch would mean a green run today and a red one tomorrow with no
+# change on our side, which makes the gates useless as evidence.
+#
+# Workflows source this file into $GITHUB_ENV; keep it shell-safe.
+#
+# When bumping a revision: re-run the affected gate, and if a protocol-visible
+# behaviour changed, say so in docs/CONFORMANCE_RESULTS.md.
+
+# Azahar emulator. Released unified source tarball plus its published hash.
+AZAHAR_VERSION=2126.0
+AZAHAR_SOURCE_SHA256=c2764473fa465f88f3b8c90efd56b3aa0a6244919a49742eeb407fe42bd869a8
+
+# DSpico cartridge firmware. This is the revision the hardware bring-up in
+# docs/HARDWARE_DSPICO_V1.md flashed to a real DSpico, so the CI build and the
+# measured results describe the same code.
+DSPICO_REPO=LNH-team/dspico-firmware
+DSPICO_COMMIT=472c9d8e9957ad18df367f14b9cc337b9b887e65
+
+# Raspberry Pi Pico SDK, as pinned by DSpico itself.
+PICO_SDK_COMMIT=6a7db34ff63345a7badec79ebea3aaef1712f374

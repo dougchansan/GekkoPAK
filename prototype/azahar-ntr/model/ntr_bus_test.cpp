@@ -19,10 +19,9 @@ static std::uint32_t load32(const std::uint8_t* p, std::size_t off) {
 static std::uint64_t wire(Device& d, std::uint8_t op, std::uint8_t index,
                           std::uint32_t value, bool read = false) {
     auto* r = d.registers();
-    const std::uint8_t cmd[8] = {
-        op, kMagic0, kMagic1, index,
-        static_cast<std::uint8_t>(value), static_cast<std::uint8_t>(value >> 8),
-        static_cast<std::uint8_t>(value >> 16), static_cast<std::uint8_t>(value >> 24)};
+    // Canonical big-endian wire form, the order DSpico's PIO delivers.
+    std::uint8_t cmd[protocol::kCommandBytes]{};
+    protocol::EncodeCommand(op, index, value, cmd);
     std::memcpy(r + kRegCommand, cmd, sizeof(cmd));
     store32(r, kRegRomCnt, kCardResetHigh | kCardActivate | (read ? kCardBlock4 : 0));
     d.Tick();

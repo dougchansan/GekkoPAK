@@ -1,0 +1,31 @@
+# Recorded GKPAK-TRACE stream from a real ARMv6K guest running the GekkoPAK v1
+# block-transport lifecycle inside a patched Azahar.
+#
+# Source: CI run 34212648410, job 102017085142, branch phase3-conformance.
+#
+# Kept as a fixture so tools/check_azahar_trace.py is exercised on every push
+# rather than only in the 14-minute Azahar job. If the guest's command stream
+# legitimately changes, replace this file from a passing E2E log -- do not relax
+# the checker to fit a stream you have not looked at.
+#
+# 19 transactions: HELLO, GET_CAPS and ALLOC over F0-F2, then the steady-state
+# F4 / F2-event / F5 triple, then FREE and COMPLETE.
+GKPAK-TRACE F1474B0100000001 depth=0
+GKPAK-TRACE F2474B0500000000 depth=0
+GKPAK-TRACE F2474B0600000000 depth=0
+GKPAK-TRACE F1474B0200000002 depth=0
+GKPAK-TRACE F2474B0500000000 depth=0
+GKPAK-TRACE F2474B0600000000 depth=0
+GKPAK-TRACE F2474B0700000000 depth=0
+GKPAK-TRACE F0474B0000001000 depth=0
+GKPAK-TRACE F1474B0300000003 depth=0
+GKPAK-TRACE F2474B0500000000 depth=0
+GKPAK-TRACE F2474B0600000000 depth=0
+GKPAK-TRACE F4474B0000000050 depth=1
+GKPAK-TRACE F2474BFE00000000 depth=1
+GKPAK-TRACE F5474B0100400000 depth=0
+GKPAK-TRACE F0474B0000000001 depth=0
+GKPAK-TRACE F1474B0800000004 depth=0
+GKPAK-TRACE F2474B0500000000 depth=0
+GKPAK-TRACE F1474B0900000005 depth=0
+GKPAK-TRACE F2474B0500000000 depth=0

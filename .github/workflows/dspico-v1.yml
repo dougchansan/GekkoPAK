@@ -1,0 +1,121 @@
+name: DSpico GekkoPAK v1
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "prototype/dspico-v1/**"
+      - "include/gekkopak/**"
+      - "src/device.cpp"
+      - "tests/conformance/**"
+      - "deps.lock"
+      - ".github/workflows/dspico-v1.yml"
+
+# GitHub's default run shell is `bash -e`, which does not set pipefail: a
+# step that pipes into tee would report tee's exit status and swallow the
+# real failure. `shell: bash` selects `bash -eo pipefail`.
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: dspico-gekkopak-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Gate 3a: the DSpico handlers answer the golden vectors identically to the
+  # emulator. Runs in seconds and needs no cross-toolchain, so a protocol
+  # divergence is reported before anyone waits on an RP2040 build.
+  dspico-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run golden vectors through the DSpico handlers
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target gekkopak_conformance -j 4
+          ./build/gekkopak_conformance | tee dspico-conformance.log
+
+      - name: Assert the DSpico target passed and agrees with the emulator
+        run: |
+          grep -qE "dspico-shim +PASS" dspico-conformance.log
+          grep -qE "azahar-model +PASS" dspico-conformance.log
+          grep -qE "cross-check +PASS" dspico-conformance.log
+          grep -q "CONFORMANCE PASS" dspico-conformance.log
+
+      - name: Upload conformance log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dspico-gekkopak-conformance-log
+          path: dspico-conformance.log
+          if-no-files-found: ignore
+
+  # Gate 3b: the same handlers still compile for the RP2040, against a pinned
+  # upstream firmware revision.
+  build-dspico-overlay:
+    needs: dspico-conformance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout GekkoPAK
+        uses: actions/checkout@v4
+
+      - name: Load pinned revisions
+        run: grep -E '^[A-Z0-9_]+=' deps.lock >> "$GITHUB_ENV"
+
+      # Pinned to a commit, not a branch: the whole point of this gate is that
+      # a red result means we changed something.
+      - name: Checkout DSpico firmware at the pinned revision
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DSPICO_REPO }}
+          ref: ${{ env.DSPICO_COMMIT }}
+          path: dspico-src
+          submodules: false
+
+      - name: Checkout DSpico-pinned Pico SDK
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: ${{ env.PICO_SDK_COMMIT }}
+          path: dspico-src/pico-sdk
+          submodules: true
+
+      - name: Install RP2040 toolchain
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y gcc-arm-none-eabi cmake ninja-build python3
+
+      - name: Apply and verify GekkoPAK overlay
+        run: |
+          python3 prototype/dspico-v1/apply_overlay.py dspico-src
+          python3 prototype/dspico-v1/verify_overlay.py dspico-src
+
+      - name: Create compile-only dummy ROM
+        run: |
+          mkdir -p dspico-src/roms
+          dd if=/dev/zero of=dspico-src/roms/default.nds bs=512 count=1 status=none
+
+      - name: Configure and build RP2040 firmware
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/dspico-src/pico-sdk
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: |
+          cmake -G Ninja -S dspico-src -B dspico-src/build-gekkopak \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build dspico-src/build-gekkopak -j 4
+          test -f dspico-src/build-gekkopak/DSpico.uf2
+          arm-none-eabi-size dspico-src/build-gekkopak/DSpico.elf
+
+      - name: Upload compile-proof UF2
+        uses: actions/upload-artifact@v4
+        with:
+          name: dspico-gekkopak-v1-compile-proof
+          path: |
+            dspico-src/build-gekkopak/DSpico.uf2
+            dspico-src/build-gekkopak/DSpico.elf
+          if-no-files-found: error
+          retention-days: 7

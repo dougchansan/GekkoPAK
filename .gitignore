@@ -10,3 +10,9 @@ prototype/azahar-ntr/build/
 *.VC.db
 *.VC.VC.opendb
 CMakeUserPresets.json
+
+# DS test app build output
+prototype/dspico-v1/ds-test/build/
+prototype/dspico-v1/ds-test/*.elf
+prototype/dspico-v1/ds-test/*.nds
+prototype/dspico-v1/ds-test/*.map

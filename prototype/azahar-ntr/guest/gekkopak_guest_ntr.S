@@ -10,18 +10,23 @@
 .equ REG_CMD0,    0x08
 .equ REG_CMD1,    0x0C
 .equ REG_FIFO,    0x1C
+.equ REG_BLOCK_TX, 0x100
+.equ REG_BLOCK_RX, 0x300
 
 .equ CARD_START,  0x80000000
 .equ CARD_RESET,  0x20000000
 .equ CARD_READY,  0x00800000
 .equ CARD_BLK4,   0x07000000
 
-.equ W_WRITE_REG, 0xF0
-.equ W_EXEC,      0xF1
-.equ W_READ_REG,  0xF2
-.equ W_PAYLOAD,   0xF3
-.equ GK_G,        0x47
-.equ GK_K,        0x4B
+.equ W_WRITE_REG,   0xF0
+.equ W_EXEC,        0xF1
+.equ W_READ_REG,    0xF2
+.equ W_PAYLOAD,     0xF3
+.equ W_WRITE_BLOCK, 0xF4
+.equ W_READ_BLOCK,  0xF5
+.equ GK_G,          0x47
+.equ GK_K,          0x4B
+.equ EVENT_COMPLETION_DEPTH, 0xFE
 
 .equ R_ARG0,      0
 .equ R_ARG1,      1
@@ -44,8 +49,13 @@
 .equ CMD_FREE,     8
 .equ CMD_COMPLETE, 9
 
-.equ PASS_MAGIC,  0x53534150
-.equ FAIL_MAGIC,  0x4C494146
+.equ CAP_BLOCK_TRANSPORT, 0x10
+.equ DESC_MAGIC,   0x31444B47
+.equ DESC_VER_OP,  0x00010001
+.equ DESC_INLINE,  0x00000001
+.equ COMP_MAGIC,   0x31434B47
+.equ PASS_MAGIC,   0x53534150
+.equ FAIL_MAGIC,   0x4C494146
 
 _start:
     ldr r10, =NTR
@@ -54,24 +64,24 @@ _start:
     mov r0, #0
     str r0, [r11, #0]
 
-    /* HELLO */
+    /* Bootstrap over F0-F2 so block transport remains capability-negotiated. */
     mov r0, #CMD_HELLO
     bl exec_hi
     mov r0, #R_OUT0
     bl rdreg
     str r0, [r11, #4]
 
-    /* GET_CAPS */
     mov r0, #CMD_GET_CAPS
     bl exec_hi
     mov r0, #R_OUT0
     bl rdreg
     str r0, [r11, #8]
+    tst r0, #CAP_BLOCK_TRANSPORT
+    beq failed
     mov r0, #R_OUT1
     bl rdreg
     str r0, [r11, #12]
 
-    /* ALLOC 4096 */
     mov r0, #R_ARG0
     mov r1, #4096
     bl wrreg
@@ -82,87 +92,97 @@ _start:
     mov r7, r0
     str r7, [r11, #16]
 
-    /* 16 bytes guest -> cart, carried in F3 command words. */
-    mov r0, #0
-    ldr r1, =0x11223344
-    bl wrpayload
+    /* Build one 64-byte GKD1 descriptor + 16 inline bytes in the Azahar-only
+     * block staging window. On hardware this buffer becomes the F4 NTR data phase. */
+    add r9, r10, #REG_BLOCK_TX
+    ldr r0, =DESC_MAGIC
+    str r0, [r9, #0]
+    ldr r0, =DESC_VER_OP
+    str r0, [r9, #4]
     mov r0, #1
-    ldr r1, =0x55667788
-    bl wrpayload
-    mov r0, #2
-    ldr r1, =0xAABBCCDD
-    bl wrpayload
-    mov r0, #3
-    ldr r1, =0x0BADF00D
-    bl wrpayload
+    str r0, [r9, #8]
+    ldr r0, =DESC_INLINE
+    str r0, [r9, #12]
+    str r7, [r9, #16]
+    mov r0, #0
+    str r0, [r9, #20]
+    mov r0, #16
+    str r0, [r9, #24]
+    mov r0, #0
+    str r0, [r9, #28]
+    str r0, [r9, #32]
+    mov r0, #16
+    str r0, [r9, #36]
+    mov r0, #1
+    str r0, [r9, #40]
+    ldr r0, =250000
+    str r0, [r9, #44]
+    ldr r0, =3500
+    str r0, [r9, #48]
+    mov r0, #0
+    str r0, [r9, #52]
+    str r0, [r9, #56]
+    str r0, [r9, #60]
 
-    mov r0, #R_ARG0
-    mov r1, r7
-    bl wrreg
-    mov r0, #R_ARG1
+    ldr r0, =0x11223344
+    str r0, [r9, #64]
+    ldr r0, =0x55667788
+    str r0, [r9, #68]
+    ldr r0, =0xAABBCCDD
+    str r0, [r9, #72]
+    ldr r0, =0x0BADF00D
+    str r0, [r9, #76]
+
+    /* Steady-state transaction 1/3: F4 descriptor + inline input. */
+    mov r0, #W_WRITE_BLOCK
     mov r1, #0
-    bl wrreg
-    mov r0, #R_PLEN
-    mov r1, #16
-    bl wrreg
-    mov r0, #CMD_UPLOAD
-    bl exec_hi
+    mov r2, #80
+    mov r3, #0
+    bl wire
 
-    /* SUBMIT DSP job. */
-    mov r0, #R_ARG0
-    mov r1, r7
-    bl wrreg
-    mov r0, #R_ARG1
+    /* Steady-state transaction 2/3: one four-byte completion-depth event. */
+    mov r0, #EVENT_COMPLETION_DEPTH
+    bl rdreg
+    cmp r0, #1
+    blt failed
+
+    /* Steady-state transaction 3/3: F5 completion block. len=64, offset=0. */
+    mov r0, #W_READ_BLOCK
     mov r1, #1
-    bl wrreg
-    mov r0, #R_ARG2
-    ldr r1, =250000
-    bl wrreg
-    mov r0, #R_ARG3
-    ldr r1, =3500
-    bl wrreg
-    mov r0, #CMD_SUBMIT
-    bl exec_hi
-    mov r0, #R_OUT0
-    bl rdreg
-    mov r6, r0
-    str r6, [r11, #20]
+    ldr r2, =0x00400000
+    mov r3, #0
+    bl wire
 
-poll_again:
-    mov r0, #R_ARG0
-    mov r1, r6
-    bl wrreg
-    mov r0, #CMD_POLL
-    bl exec_hi
-    mov r0, #R_OUT0
-    bl rdreg
+    add r9, r10, #REG_BLOCK_RX
+    ldr r0, [r9, #0]
+    ldr r1, =COMP_MAGIC
+    cmp r0, r1
+    bne failed
+    ldrh r0, [r9, #6]
     cmp r0, #0
-    beq poll_again
-
-    /* COLLECT */
-    mov r0, #R_ARG0
-    mov r1, r6
-    bl wrreg
-    mov r0, #CMD_COLLECT
-    bl exec_hi
-    mov r0, #R_OUT0
-    bl rdreg
+    bne failed
+    ldr r0, [r9, #12]
+    str r0, [r11, #20]
+    ldr r0, [r9, #16]
     str r0, [r11, #24]
-    mov r0, #R_OUT1
-    bl rdreg
+    ldr r0, [r9, #20]
     str r0, [r11, #28]
-    mov r0, #R_OUT2
-    bl rdreg
+    ldr r0, [r9, #24]
     str r0, [r11, #32]
+    ldr r0, [r9, #36]
+    str r0, [r11, #36]
+    ldr r0, [r9, #40]
+    str r0, [r11, #40]
+    mov r0, #3
+    str r0, [r11, #44]
 
-    /* FREE */
+    /* Cleanup remains on the bootstrap/debug path. */
     mov r0, #R_ARG0
     mov r1, r7
     bl wrreg
     mov r0, #CMD_FREE
     bl exec_hi
 
-    /* COMPLETE must be acknowledged by the cartridge before PASS is visible. */
     mov r0, #CMD_COMPLETE
     bl exec_hi
     ldr r0, =PASS_MAGIC
@@ -171,7 +191,6 @@ poll_again:
 finished:
     b finished
 
-/* r0 = staging register, r1 = value */
 wrreg:
     push {lr}
     mov r2, r1
@@ -181,17 +200,6 @@ wrreg:
     bl wire
     pop {pc}
 
-/* r0 = payload word index, r1 = value */
-wrpayload:
-    push {lr}
-    mov r2, r1
-    mov r1, r0
-    mov r0, #W_PAYLOAD
-    mov r3, #0
-    bl wire
-    pop {pc}
-
-/* r0 = staging register; returns value in r0 */
 rdreg:
     push {lr}
     mov r1, r0
@@ -201,7 +209,6 @@ rdreg:
     bl wire
     pop {pc}
 
-/* r0 = high command. */
 exec_hi:
     push {r4, lr}
     mov r4, r0
@@ -217,10 +224,7 @@ exec_hi:
     bne failed
     pop {r4, pc}
 
-/*
- * Low-level NTR transaction.
- * r0=wire opcode, r1=index/high command, r2=value/sequence, r3=read response.
- */
+/* r0=wire opcode, r1=index/selector, r2=value, r3=read four-byte FIFO response. */
 wire:
     push {r4-r5, lr}
     and r0, r0, #0xFF
@@ -229,7 +233,17 @@ wire:
     orr r4, r4, #(GK_K << 16)
     orr r4, r4, r1, lsl #24
     str r4, [r10, #REG_CMD0]
-    str r2, [r10, #REG_CMD1]
+
+    /* The command value word goes out big-endian, MSB first.
+     *
+     * CMD0's bytes already land in wire order because the opcode sits in the
+     * low byte of a little-endian store. CMD1 does not: a plain str would put
+     * the value's LSB on the bus first, which is the byte order DSpico's PIO
+     * reads as the MSB. The DS-side test client byte-swaps for exactly this
+     * reason, and the emulator has to agree with the silicon rather than the
+     * other way round. */
+    rev r5, r2
+    str r5, [r10, #REG_CMD1]
 
     ldr r4, =(CARD_START | CARD_RESET)
     cmp r3, #0

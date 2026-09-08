@@ -55,17 +55,38 @@ Exit criteria:
 
 Deliverables:
 
-- [ ] virtual GekkoPAK device/backend in an Azahar development fork
-- [ ] functional mode
-- [ ] timed mode
+- [x] virtual GekkoPAK device/backend in an Azahar development fork
+- [x] functional mode
+- [x] timed mode (modeled; see the caveat in `CONFORMANCE_RESULTS.md`)
 - [ ] selectable hardware profiles
-- [ ] persistent-buffer implementation
-- [ ] asynchronous submit/poll/collect behavior
+- [x] persistent-buffer implementation
+- [x] asynchronous submit/poll/collect behavior
 
 Exit criteria:
 
 - GekkoCTR can run unchanged against software and virtual-device backends;
 - virtual hardware timing can be varied without changing guest code.
+
+## Phase 2.5 — Shared device core and conformance
+
+**Question:** Do the emulator and the firmware actually implement the same protocol?
+
+They did not. Three copies of the state machine had drifted apart in four ways
+that no test could see, including a guest that would have byte-swapped every
+command value word on real silicon.
+
+Deliverables:
+
+- [x] one shared protocol/device core, freestanding enough for an RP2040
+- [x] transport adapters for host, Azahar and DSpico
+- [x] transport-independent golden wire vectors
+- [x] a host-buildable DSpico shim, so firmware handlers run without hardware
+- [x] cross-target byte-identity check
+- [x] CI gates with every external revision pinned
+- [ ] the same vectors replayed on physical hardware
+
+Exit criteria: met, except that the vectors do not yet run on a console. See
+`docs/CONFORMANCE_RESULTS.md`.
 
 ## Phase 3 — Real 2DS XL cartridge transport
 
@@ -76,6 +97,15 @@ Initial hardware:
 - existing DSpico-class cartridge
 - native CTR test application
 - no FPGA required
+
+Bring-up so far (`docs/HARDWARE_DSPICO_V1.md`):
+
+- [x] cartridge boots and is detected
+- [x] bus, ROMCTRL and command byte order confirmed on silicon
+- [x] F0-F3 control path and the `0xf269b734` checksum
+- [x] F4 512-byte block write
+- [ ] F5 512-byte block readback — the one open fault
+- [ ] any timing measurement at all; every number so far is modeled
 
 Measurements:
 

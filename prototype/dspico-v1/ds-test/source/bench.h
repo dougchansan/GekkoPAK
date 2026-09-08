@@ -1,0 +1,119 @@
+#ifndef GEKKOPAK_BENCH_H
+#define GEKKOPAK_BENCH_H
+
+#include "gekkopak_ntr.h"
+
+#define GPK_BENCH_ITERATIONS 100
+#define GPK_BENCH_WARMUP     16
+
+// The deterministic 16-byte GekkoPAK test payload. Its FNV-1a is 0xf269b734
+// when the bytes reach DSpico SRAM in this order, which is the assertion that
+// validates the whole write path end to end.
+#define GPK_EXPECTED_CHECKSUM 0xf269b734u
+extern const u8 gpkTestPattern[16];
+
+typedef struct {
+    u32 min_us;
+    u32 median_us;
+    u32 mean_us;
+    u32 p95_us;
+    u32 max_us;
+    u32 samples;
+} gpk_stats_t;
+
+typedef struct {
+    u32 bytes;
+    gpk_stats_t word_path;  // F3, 4 bytes per transaction
+    gpk_stats_t block_path; // F4, one 512-byte bus transfer
+} gpk_size_result_t;
+
+typedef struct {
+    u32 batch;
+    u32 us_per_job_x1000;
+    u32 transactions_x1000;   // transactions per job, x1000
+    u32 completions;
+    bool ok;
+} gpk_batch_result_t;
+
+typedef struct {
+    bool  device_present;
+    int   init_layer;
+    u32   protocol;
+    u32   caps;
+    u32   local_bytes;
+    u32   transport;
+    bool  f4_ok;
+    bool  f5_ok;
+    bool  checksum_ok;
+    u32   checksum;
+    u32   legacy_checksum;
+    bool  legacy_ok;
+    u32   event_depth;
+    // RP2040-side F4 counters, read back over F2 indices 0xF0-0xF3.
+    u32   f4_enter, f4_accepted, f4_complete, f4_parsed;
+    // Allocation handle obtained by the block stage; 0 means it never got that far.
+    u32   block_handle;
+    // Which F4 attempt queued a completion, 1-based; 0 if none did.
+    // Turns "flaky, power-cycle it" into a number that can be tracked.
+    u32   f4_attempts;
+    // First 32 bytes of the F5 completion block, so the record layout can be
+    // inspected rather than inferred. GKC1 should begin 47 4B 43 31 01 00 00 00.
+    u8    f5_head[32];
+    gpk_stats_t cmd_latency;
+    gpk_stats_t f4_latency;
+    gpk_stats_t f5_latency;
+    gpk_stats_t rtt_512;
+    u32   write_kib_per_s;
+    u32   read_kib_per_s;
+    gpk_size_result_t sizes[7];
+    u32   size_count;
+    gpk_batch_result_t batches[4];
+    u32   batch_count;
+    bool  overall_ok;
+    u32   latency_read;
+    u32   latency_write;
+} gpk_report_t;
+
+// Heartbeat, defined in main.c. Called outside timed regions only.
+void gpk_tick(void);
+
+void gpk_stats_compute(u32 *samples, u32 count, gpk_stats_t *out);
+// Run several F4 variants in one boot and report which, if any, queues a
+// completion. One hypothesis per hardware round trip is far too slow when each
+// costs a card swap and a photograph.
+typedef struct {
+    const char *name;
+    u32 completions;   // event depth after the attempt
+    u32 enter, accepted, complete, parsed;  // RP2040 counters, delta for this variant
+} gpk_f4_variant_t;
+
+#define GPK_F4_VARIANTS 6
+
+// F5 read sweep: latency x priming, reporting where 'GKC1' actually lands.
+//
+// The completion record is written at offset 0 by the cartridge but arrives at
+// offset 12 behind three words of 0xFF, so the console is clocking the block
+// before the RP2040 drives it. This sweep answers whether that skew is a
+// latency problem (offset shrinks as LATENCY2 rises), a first-transaction
+// problem (priming removes it), or structural (offset stays at 12 throughout).
+#define GPK_F5_VARIANTS 8
+
+typedef struct {
+    const char *name;
+    u32 latency;
+    u32 prime;
+    u32 magic_offset;  // byte offset of 'GKC1', or GPK_F5_NO_MAGIC
+    u32 head0;         // first word as received, for context
+    u32 depth;         // completions queued by this variant's F4
+    u32 attempts;      // F4 attempts needed, 0 if none ever queued
+} gpk_f5_variant_t;
+
+#define GPK_F5_NO_MAGIC 0xFFFFFFFFu
+
+u32 gpk_f5_matrix(gpk_f5_variant_t *out);
+u32 gpk_f4_matrix(gpk_f4_variant_t *out);
+
+bool gpk_run_quick(gpk_report_t *r);
+bool gpk_run_full(gpk_report_t *r);
+
+#endif

@@ -4,7 +4,15 @@
 
 GekkoPAK explores an enhancement-chip-style cartridge that works alongside a native CTR static-recomp runtime such as GekkoCTR. The cartridge is **not** intended to extend FCRAM directly. Instead, it provides local memory and asynchronous compute engines for workloads whose compute-to-transfer ratio makes cartridge offload worthwhile.
 
-> Status: **Phase 2 emulator/transport prototype.** The host simulator passes, a real ARMv6K guest passes the full GekkoPAK lifecycle inside Azahar, and the NTRCARD bring-up protocol passes through a genuinely mapped `0x1EC64000` register page. The source-patched Azahar core backend compiles successfully; its dedicated core-side NTR E2E runtime gate is being validated separately.
+> Status: **Phase 3 conformance.** One shared protocol/device core now backs all
+> three transports -- the host model, the Azahar core device and the DSpico
+> RP2040 firmware -- and golden wire vectors check them against each other
+> byte for byte. A real ARMv6K guest still passes the full GekkoPAK lifecycle
+> inside Azahar through a genuinely mapped `0x1EC64000` register page. On real
+> DSpico hardware the F0-F3 control path and F4 block writes are confirmed;
+> F5 readback is not. See [docs/CONFORMANCE_RESULTS.md](docs/CONFORMANCE_RESULTS.md)
+> for exactly what is emulator-validated, what is modeled and what still needs a
+> console.
 
 ## Current milestones
 
@@ -32,7 +40,7 @@ Deterministic bring-up result:
 
 ```text
 protocol        : 1.0
-capabilities    : 0x0000000f
+capabilities    : 0x0000001f
 local RAM       : 32 MiB
 allocation      : handle 1
 job             : handle 1
@@ -42,7 +50,32 @@ speedup         : 1.383x
 payload checksum: 0xf269b734
 ```
 
-Those timing values are modeled assumptions, not physical-cartridge measurements.
+Those timing values are modeled assumptions, not physical-cartridge
+measurements. The checksum is not: `0xf269b734` was reproduced on a real DSpico
+driven by a New 2DS XL.
+
+### Shared device core and conformance
+
+`include/gekkopak/{protocol,device}.h` and `src/device.cpp` hold the protocol
+state machine -- staging registers, allocator, job handles,
+SUBMIT/POLL/COLLECT/FREE, the GKD1/GKC1 block ABI, the completion queue. It is
+freestanding by contract, because the same source compiles into RP2040
+firmware: no allocation, no exceptions, no STL containers, no floating point.
+
+Each transport is a thin adapter that owns its bus and nothing else. The golden
+vectors in `tests/conformance/vectors/` are pure wire traces -- command bytes,
+direction, length, expected response -- and are replayed against all three
+host-buildable targets, which must agree byte for byte:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+./build/gekkopak_conformance
+```
+
+That harness found four divergences that had accumulated between the three
+implementations, including an ARM guest that would have byte-swapped every
+command value word on real silicon. They are listed in
+[docs/CONFORMANCE_RESULTS.md](docs/CONFORMANCE_RESULTS.md).
 
 ### NTRCARD register transport
 
@@ -63,7 +96,14 @@ ARM guest
 GekkoPAK device
 ```
 
-The production ARM guest completes the cold-start sequence in **46 low-level wire transactions**. A stock-Azahar mapped-page development harness reproduces the complete deterministic PASS with ordinary guest CPU loads/stores and a clean shutdown.
+The production ARM guest completes the cold-start sequence in **19 low-level
+wire transactions**, measured from the traced command stream of a passing CI
+run: `HELLO`, `GET_CAPS` and `ALLOC` over `F0`-`F2`, then the steady-state
+`F4` / `F2`-event / `F5` triple, then `FREE` and `COMPLETE`. The superseded
+`F0`-`F3` guest needed 46 for the same work.
+
+A stock-Azahar mapped-page development harness reproduces the complete
+deterministic PASS with ordinary guest CPU loads/stores and a clean shutdown.
 
 See:
 
@@ -71,9 +111,11 @@ See:
 - [`docs/AZAHAR_NTR_INJECTED_PASS.md`](docs/AZAHAR_NTR_INJECTED_PASS.md)
 - [`prototype/azahar-ntr/README.md`](prototype/azahar-ntr/README.md)
 
-### Batched NTR v1 target
+### Batched NTR v1
 
-The F0-F3 protocol is deliberately verbose for bring-up. The planned F4/F5 transport uses the same 512-byte data-phase primitives already demonstrated by DSpico.
+The F0-F3 protocol is deliberately verbose for bring-up. The F4/F5 transport
+uses the same 512-byte data-phase primitives DSpico already provides, and is
+implemented on all three transports.
 
 Current modeled steady-state control path:
 
@@ -82,9 +124,23 @@ F0-F3: 21 transactions
 v1:     3 transactions
 ```
 
-Under the provisional 6 MiB/s / 25 us command assumptions, the model reduces bus/control time from about **530 us to 238 us** despite moving full 512-byte blocks.
+The 85.7% transaction reduction is a count, and it is real. Under the
+provisional 6 MiB/s / 25 us assumptions the model puts that at **530 us to
+238 us** of bus/control time despite moving full 512-byte blocks -- but that
+microsecond figure is arithmetic over an unmeasured bus, not a measurement.
 
-See [`docs/NTR_WIRE_V1.md`](docs/NTR_WIRE_V1.md).
+See [`docs/NTR_WIRE_V1.md`](docs/NTR_WIRE_V1.md) and
+[`docs/CONFORMANCE_RESULTS.md`](docs/CONFORMANCE_RESULTS.md).
+
+### On real hardware
+
+A New 2DS XL driving a DSpico RP2040 confirms the bus setup, the command byte
+order, the F0-F3 control path and the `0xf269b734` checksum, and F4 block
+writes. F5 completion readback does not yet validate. The conformance harness
+narrows that fault to the 512-byte cartridge-to-console data phase, because the
+identical handler produces a correctly aligned record on the host shim.
+
+See [`docs/HARDWARE_DSPICO_V1.md`](docs/HARDWARE_DSPICO_V1.md).
 
 ## Goals
 
@@ -119,13 +175,17 @@ Candidate accelerators include:
 ## Repository layout
 
 ```text
-include/gekkopak/        Public C++ API
-src/                     Host reference implementation
+include/gekkopak/        Shared protocol/device core, plus the public C++ API
+src/                     Core implementation and the host performance model
 sim/                     Virtual GekkoPAK CLI / experiments
+tests/conformance/       Golden wire vectors and the cross-target runner
 prototype/azahar/        Initial Azahar ARM-guest mailbox prototype
-prototype/azahar-ntr/    NTRCARD register/device prototype and source overlay
-prototype/dspico/        DSpico hardware transport integration notes
-docs/                    Architecture, protocols, emulator results and roadmap
+prototype/azahar-ntr/    NTRCARD transport adapter, ARM guest and source overlay
+prototype/dspico/        DSpico transport design notes
+prototype/dspico-v1/     DSpico firmware overlay, host shim and DS test app
+tools/                   Trace checking and hardware result parsing
+docs/                    Architecture, protocols, results and roadmap
+deps.lock                Pinned Azahar / DSpico / Pico SDK revisions
 ```
 
 ## Build

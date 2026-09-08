@@ -53,6 +53,10 @@ speedup         : 1.383x
 payload checksum: 0xf269b734
 ```
 
+That capability word is `0x0000000f`, the pre-block-transport value. Adding
+F4/F5 set bit 4, so current runs report `0x0000001f`. The rest of the baseline
+is unchanged. See `docs/CONFORMANCE_RESULTS.md`.
+
 The uploaded 16-byte payload originates in guest ARM memory. The frontend copies it into accelerator-local memory and computes FNV-1a `0xf269b734`; the regression validator independently computes the same checksum. This proves guest-to-device data transfer rather than merely replaying a host-side command list.
 
 The timing numbers remain simulated hardware assumptions. They are **not** measurements of a physical DSpico, RP2350, cartridge bus, or FPGA.

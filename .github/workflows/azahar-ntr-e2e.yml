@@ -5,7 +5,22 @@ on:
   push:
     paths:
       - "prototype/azahar-ntr/**"
+      - "include/gekkopak/**"
+      - "src/device.cpp"
+      - "tools/check_azahar_trace.py"
+      - "deps.lock"
       - ".github/workflows/azahar-ntr-e2e.yml"
+
+# GitHub's default run shell is `bash -e`, which does not set pipefail: a
+# step that pipes into tee would report tee's exit status and swallow the
+# real failure. `shell: bash` selects `bash -eo pipefail`.
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: azahar-ntr-e2e-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   azahar-ntr-e2e:
@@ -17,6 +32,9 @@ jobs:
     steps:
       - name: Checkout GekkoPAK
         uses: actions/checkout@v4
+
+      - name: Load pinned revisions
+        run: grep -E '^[A-Z0-9_]+=' deps.lock >> "$GITHUB_ENV"
 
       - name: Install build tools
         run: |
@@ -37,12 +55,20 @@ jobs:
       - name: Run transport-only model
         run: bash ./prototype/azahar-ntr/scripts/run_model.sh
 
-      - name: Fetch Azahar 2126.0 unified source
+      # Fail fast: if the shared core no longer answers the golden vectors,
+      # there is no point building Azahar around it.
+      - name: Run golden vectors against the shared core
+        run: |
+          cmake -S . -B build-conformance -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-conformance --target gekkopak_conformance -j 2
+          ./build-conformance/gekkopak_conformance
+
+      - name: Fetch the pinned Azahar unified source
         run: |
           curl -L --fail --retry 3 \
             -o azahar-source.tar.xz \
-            https://github.com/azahar-emu/azahar/releases/download/2126.0/azahar-unified-source-2126.0.tar.xz
-          echo "c2764473fa465f88f3b8c90efd56b3aa0a6244919a49742eeb407fe42bd869a8  azahar-source.tar.xz" | sha256sum -c -
+            "https://github.com/azahar-emu/azahar/releases/download/${AZAHAR_VERSION}/azahar-unified-source-${AZAHAR_VERSION}.tar.xz"
+          echo "${AZAHAR_SOURCE_SHA256}  azahar-source.tar.xz" | sha256sum -c -
           mkdir azahar-src
           tar -xJf azahar-source.tar.xz -C azahar-src --strip-components=1
 
@@ -51,24 +77,27 @@ jobs:
           python3 prototype/azahar-ntr/azahar_overlay/apply_overlay.py azahar-src
           python3 prototype/azahar-ntr/azahar_overlay/verify_overlay.py azahar-src
 
-      - name: Build patched Azahar libretro core
+      - name: Build software-only patched Azahar libretro core
         run: |
-          cmake -S azahar-src -B azahar-src/build/gekkopak \
+          cmake -G Ninja -S azahar-src -B azahar-src/build/gekkopak \
             -DENABLE_LIBRETRO=ON \
             -DENABLE_TESTS=OFF \
             -DENABLE_LTO=OFF \
+            -DENABLE_SOFTWARE_RENDERER=ON \
+            -DENABLE_OPENGL=OFF \
+            -DENABLE_VULKAN=OFF \
             -DCMAKE_C_COMPILER=gcc-12 \
             -DCMAKE_CXX_COMPILER=g++-12 \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build azahar-src/build/gekkopak \
-            --target citra_libretro --config Release -j 2
+            --target citra_libretro --config Release -j 4
           ccache --show-stats
 
       - name: Upload patched Azahar core
         uses: actions/upload-artifact@v4
         with:
-          name: azahar-2126-gekkopak-ntr-core
+          name: azahar-2126-gekkopak-ntr-v1-core
           path: azahar-src/build/gekkopak/bin/Release/azahar_libretro.so
           if-no-files-found: error
           retention-days: 7
@@ -85,6 +114,7 @@ jobs:
         run: |
           CORE=azahar-src/build/gekkopak/bin/Release/azahar_libretro.so
           test -f "$CORE"
+          GEKKOPAK_TRACE=1 \
           GEKKOPAK_SYSTEM_DIR="$PWD/prototype/azahar-ntr/build/e2e/system" \
           GEKKOPAK_SAVE_DIR="$PWD/prototype/azahar-ntr/build/e2e/saves" \
           GEKKOPAK_ASSETS_DIR="$PWD/prototype/azahar-ntr/build/e2e/assets" \
@@ -94,12 +124,27 @@ jobs:
               2>&1 | tee prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
           grep -q "NTR E2E PASS" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
           grep -q "Mapped GekkoPAK NTRCARD window" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+          grep -q "GKPAK-TRACE F4474B00" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+          grep -q "GKPAK-TRACE F5474B01" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+          grep -q "steady transfers: 3" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
           grep -q "GekkoPAK NTR guest completed" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+
+      # Gate 4: the guest did not merely reach PASS, it spoke the protocol the
+      # golden vectors describe -- every command carrying the GK discriminator,
+      # in a valid F0-F5 order, ending in COMPLETE.
+      - name: Check the guest command stream against the protocol
+        run: |
+          python3 tools/check_azahar_trace.py \
+            prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log \
+            --require-block --print-stream \
+            | tee prototype/azahar-ntr/build/e2e/trace-check.log
 
       - name: Upload E2E log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: azahar-ntr-e2e-log
-          path: prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+          path: |
+            prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+            prototype/azahar-ntr/build/e2e/trace-check.log
           if-no-files-found: ignore
