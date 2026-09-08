@@ -123,7 +123,10 @@ jobs:
               "$PWD/prototype/azahar-ntr/build/e2e/gekkopak_guest_ntr.elf" \
               2>&1 | tee prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
           grep -q "NTR E2E PASS" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
-          grep -q "Mapped GekkoPAK NTRCARD window" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+          # The memory core is device-agnostic, so the mapping line names the
+          # address rather than the device; the device announces itself separately.
+          grep -q "Mapped MMIO window at 0x1EC64000" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
+          grep -q "GekkoPAK NTR virtual cartridge reset" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
           grep -q "GKPAK-TRACE F4474B00" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
           grep -q "GKPAK-TRACE F5474B01" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log
           grep -q "steady transfers: 3" prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log

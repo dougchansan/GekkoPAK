@@ -28,6 +28,16 @@ So before this patch the GekkoPAK window was ordinary RAM, and the transport had
 to invent a per-word acknowledgement to work around not being able to see a
 read.
 
+## Shape of the solution
+
+The memory core gains a *generic* capability — serve a page from a registered
+device instead of from memory — and GekkoPAK registers itself. Azahar's own
+sources name GekkoPAK in exactly one place, a single `Install()` call, and the
+memory core and VM manager name it nowhere at all.
+
+That split is enforced, not just intended: `verify_overlay.py` fails if a
+GekkoPAK reference ever appears in the generic files.
+
 ## Why it is tractable
 
 Two facts from the source make this a small change rather than a rewrite:
@@ -49,56 +59,69 @@ calls a device".
 
 ## The patch
 
-Six files, and the largest hunk is four lines.
+Seven files, and none of the generic ones names GekkoPAK.
 
-### `src/core/memory.h`
+### Generic infrastructure — no device references
+
+**`src/core/memory.h`**
 
 - One new `PageType::MMIO`.
-- One declaration: `void MapMMIORegion(PageTable&, VAddr base, u32 size)`.
+- `MMIOHandler` — three function pointers: `read32`, `write32`, `on_map`.
+  Offsets are relative to the window base, so a device need not know where it
+  was mapped.
+- `MMIOWindow` — physical base, size, the virtual base filled in at map time,
+  the handler, and a backing buffer.
+- `RegisterMMIOWindow`, `FindMMIOWindowByPhys`, `MMIORead32`, `MMIOWrite32`.
+- `MapMMIORegion` on `MemorySystem`.
 
-### `src/core/memory.cpp`
+**`src/core/memory.cpp`**
 
-- Include the GekkoPAK device header.
-- `Read<T>`: `case PageType::MMIO:` → `GekkoPakNtr::Read32(vaddr & CITRA_PAGE_MASK)`.
-- `Write<T>`: `case PageType::MMIO:` → `GekkoPakNtr::Write32(...)`.
-- `ReadBlock`/`WriteBlock`: a word loop, because those switches end in
+- The registry: a `std::vector<MMIOWindow>` behind a function-local static, so
+  initialisation order is safe no matter when a device registers.
+- `Read<T>` / `Write<T>`: `case PageType::MMIO:` → `MMIORead32` / `MMIOWrite32`.
+- `ReadBlock` / `WriteBlock`: a word loop, because those switches end in
   `default: UNREACHABLE()` and a block copy across the window would otherwise
-  abort. Nothing in GekkoPAK does this; it is there so nothing can.
+  abort. Nothing does this today; it is there so nothing can.
 - `MapMMIORegion`: `MapPages(..., nullptr, PageType::MMIO)`. The null pointer is
   the whole mechanism.
 
-Accesses are asserted to be 32-bit, matching the existing Luma MMIO path which
-carries the same restriction (`ASSERT(sizeof(data) == sizeof(u32))`).
+Accesses are asserted 32-bit, matching the existing Luma MMIO path which carries
+the same restriction.
 
-### `src/core/hle/kernel/vm_manager.{h,cpp}`
+**`src/core/hle/kernel/vm_manager.{h,cpp}`**
 
-- One new `VMAType::MMIO`.
-- One case in `UpdatePageTableForVMA`.
-- `MakeMMIO(VMAHandle)`: retype a VMA and refresh its pages.
+- One new `VMAType::MMIO`, one case in `UpdatePageTableForVMA`, and
+  `MakeMMIO(VMAHandle)` to retype a VMA and refresh its pages.
 
 This is the part that is easy to get wrong. Overwriting the page table behind
 the VM manager's back works — until something re-derives it from the VMA. A
-reprotect, a memory-state change or a VMA merge all call
-`UpdatePageTableForVMA`, which would silently turn the window back into RAM and
-leave the guest spinning on a `DATA_READY` that never arrives. Giving the VMA a
-type keeps the two consistent by construction.
+reprotect, a memory-state change or a merge all call `UpdatePageTableForVMA`,
+which would silently turn the window back into RAM and leave the guest spinning
+on a `DATA_READY` that never arrives. Giving the VMA a type keeps the two
+consistent by construction.
 
-### `src/core/hle/kernel/memory.cpp`
+**`src/core/hle/kernel/memory.cpp`**
 
-The IO-area branch maps the GekkoPAK window instead of refusing it. The VMA is
-carved as backing memory first so the VM manager's bookkeeping is complete, then
-converted with `MakeMMIO`.
+The IO-area branch asks the registry whether any device claims the physical
+address, and maps it if so. With no device registered this is a no-op and the
+mapping is refused exactly as before the overlay.
 
-The backing buffer comes from `GekkoPakNtr::GetRegisterMemory()` rather than
-`memory.GetPhysicalRef(phys_addr)` — there is no physical memory behind an IO
-address, and asking for it trips an assertion. That buffer is never served to
-the guest; it doubles as the device's own register storage.
+### The one binding site
 
-### `src/core/core.cpp`
+**`src/core/core.cpp`** — a single `GekkoPakNtr::Install();` in `System::Init`,
+plus its include.
 
-Nothing. The previous overlay hooked `System::RunLoop` to service the device
-once per CPU slice; an access-driven device needs no servicing, so that hook is
-gone and `core.cpp` is untouched.
+It has to be explicit rather than a static initialiser inside the device's own
+translation unit: `citra_core` is a `STATIC` library, and the linker drops a TU
+nothing references, taking its initialisers with it.
+
+`Install()` builds an `MMIOHandler` from three captureless lambdas and registers
+the window. Everything GekkoPAK-specific — the physical base, the register
+semantics, the reset behaviour — lives in the two files the overlay *adds*,
+not in the files it *patches*.
+
+`verify_overlay.py` asserts this: it fails if the string `GekkoPak` ever appears
+in `memory.h`, `memory.cpp`, `vm_manager.{h,cpp}` or `kernel/memory.cpp`.
 
 ## What it buys
 
@@ -124,7 +147,7 @@ them, but nothing is modelled yet.
 ## Risk
 
 This is a larger patch surface into emulator internals than the rest of the
-overlay, and it is anchored on exact source text in six files. Azahar is pinned
+overlay, and it is anchored on exact source text in seven files. Azahar is pinned
 in `deps.lock` for exactly this reason, and `verify_overlay.py` checks every
 marker so a version bump fails in a second rather than forty minutes into a
 compile.
@@ -138,7 +161,8 @@ that only the GekkoPAK window can reach.
 Built locally against pinned Azahar 2126.0 and run with the real ARMv6K guest:
 
 ```
-Mapped GekkoPAK NTRCARD window at 0x1EC64000 as MMIO
+Mapped MMIO window at 0x1EC64000 (phys 0x10164000)
+GekkoPAK NTR virtual cartridge reset: protocol=0x00010000 caps=0x0000001F
 ...
 NTR E2E PASS
 payload checksum: 0xf269b734    modeled offload: 2738 us / 1.278x

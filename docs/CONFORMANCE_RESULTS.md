@@ -134,10 +134,13 @@ exactly as on hardware. Nothing acknowledges anything.
 
 That last part needed a change to Azahar itself. The emulator had no MMIO page
 type at all: Citra's `MMIORegion` was removed, so a mapped page was simply RAM
-and the device could not observe a read. The overlay adds one back — one
-`PageType`, one `VMAType`, four switch cases and two mapping entry points. The
-dynarmic JIT needed no change, because it already falls back to the memory
-callbacks for any page whose pointer is null. See `docs/AZAHAR_MMIO.md`.
+and the device could not observe a read. The overlay adds one back as *generic*
+infrastructure — a page type, a VMA type, and a handler registry that dispatches
+by address. Azahar's own sources name GekkoPAK in exactly one place, a single
+`Install()` call; the memory core and VM manager name it nowhere, and the
+overlay verifier fails if that ever changes. The dynarmic JIT needed no change,
+because it already falls back to the memory callbacks for any page whose pointer
+is null. See `docs/AZAHAR_MMIO.md`.
 
 A guest that programs the wrong block size for its opcode, or touches the FIFO
 with no transfer open, is now a reported fault rather than something nothing
