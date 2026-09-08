@@ -51,6 +51,22 @@ encodes 4 bytes or 512 and up. There is no 64- or 128-byte bus transfer, so a
 "64-byte payload" is either sixteen 4-byte `F3` transactions or one 512-byte
 `F4` with 64 meaningful bytes.
 
+### Required ROMCNT block size
+
+Every opcode has exactly one legal value for ROMCNT bits 26:24, and the console
+must program it:
+
+| Opcode | Data phase | Block-size field |
+|---|---|---|
+| `F0`, `F1`, `F3` | none | `0` |
+| `F2` | 4 bytes cart to console | `7` |
+| `F4` | 512 bytes console to cart | `1` |
+| `F5` | 512 bytes cart to console | `1` |
+
+Programming any other value desynchronises the bus. The emulated transport
+reports it as a fault and refuses the command rather than transferring
+something nobody asked for.
+
 Selectors, as implemented:
 
 - `0`: command/descriptor queue.

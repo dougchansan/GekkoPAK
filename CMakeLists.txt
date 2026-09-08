@@ -79,6 +79,14 @@ if(BUILD_TESTING)
         ${GEKKOPAK_TEST_ASSERTS})
     add_test(NAME gekkopak_device_core COMMAND gekkopak_device_tests)
 
+    add_executable(gekkopak_transport_tests
+        tests/test_ntr_transport.cpp
+    )
+    target_link_libraries(gekkopak_transport_tests PRIVATE gekkopak_core)
+    target_compile_options(gekkopak_transport_tests PRIVATE ${GEKKOPAK_WARNINGS}
+        ${GEKKOPAK_TEST_ASSERTS})
+    add_test(NAME gekkopak_ntr_transport COMMAND gekkopak_transport_tests)
+
     # Golden wire vectors, replayed against every host-buildable target.
     add_executable(gekkopak_conformance
         tests/conformance/conformance_main.cpp

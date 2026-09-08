@@ -12,7 +12,7 @@ Device::Device(std::uint32_t local_bytes) : pool_(local_bytes, 0) {
     config.pool_bytes = local_bytes;
     config.reported_local_bytes = local_bytes;
     core_.Reset(config);
-    Store32(kRegRomCnt, kCardResetHigh);
+    transport_.Reset(regs_.data());
 }
 
 std::uint32_t Device::Load32(std::size_t off) const {
@@ -24,7 +24,7 @@ void Device::Store32(std::size_t off, std::uint32_t value) {
 }
 
 void Device::Tick() {
-    ntr_transport::Tick(core_, regs_.data());
+    transport_.Tick(core_, regs_.data());
 }
 
 bool Device::WriteBlock(BlockSelector selector, const std::uint8_t* data, std::size_t len,

@@ -73,14 +73,22 @@ cmake -S ../.. -B build && cmake --build build --target gekkopak_conformance
 ./build/gekkopak_conformance
 ```
 
-## Block-transport fidelity caveat
+## The data phase
 
-F4/F5 payloads cross into the Azahar device through a staging window inside the
-register page (`+0x100` and `+0x300`), not through the ROMCNT data FIFO. The
-protocol semantics above it are exact; the 512-byte bus transfer underneath it
-is not modelled at all. So this prototype can prove the descriptor ABI, the
-queue behaviour and the responses, and cannot say anything about block-size
-fields, latency settings or DMA.
+F4/F5 move their 512-byte payload through the ROMCNT-driven FIFO, a word at a
+time, the way the bus works. The guest builds its block in ordinary RAM,
+declares the block size in ROMCNT bits 26:24, and streams 128 words;
+`CARD_START` stays asserted until the last one crosses. Declaring the wrong
+block size for an opcode is a reported bus fault.
+
+The one emulator-ism left is the per-word acknowledgement: on silicon, reading
+the FIFO clears `DATA_READY` by itself, but Azahar maps this page as ordinary
+memory and has no MMIO page type, so the device cannot see a read. The guest
+clears the bit explicitly instead. See
+`include/gekkopak/ntr_register_transport.h`.
+
+Timing is still not modelled: a word crosses when the next service tick comes
+round, not after a number of card clocks.
 
 ## Patched Azahar run
 

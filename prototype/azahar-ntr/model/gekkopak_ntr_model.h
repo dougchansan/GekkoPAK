@@ -11,6 +11,7 @@
 // tests and tools keep compiling against gekkopak::ntr::.
 
 #include "gekkopak/device.h"
+#include "gekkopak/ntr_register_transport.h"
 #include "gekkopak/protocol.h"
 
 #include <array>
@@ -33,16 +34,13 @@ constexpr std::size_t kRegisterPageSize = 0x1000;
 constexpr std::size_t kRegRomCnt = 0x04;
 constexpr std::size_t kRegCommand = 0x08;
 constexpr std::size_t kRegFifo = 0x1C;
-// Block staging windows. These are an emulator convenience: on real hardware
-// the 512-byte payload crosses the bus as an NTR data phase, not through the
-// register page. See docs/CONFORMANCE_RESULTS.md for the fidelity gap this
-// leaves.
-constexpr std::size_t kRegBlockTx = 0x100;
-constexpr std::size_t kRegBlockRx = 0x300;
 
 constexpr std::uint32_t kCardActivate = 1u << 31;
 constexpr std::uint32_t kCardResetHigh = 1u << 29;
 constexpr std::uint32_t kCardDataReady = 1u << 23;
+constexpr std::uint32_t kCardBlockMask = 7u << 24;
+constexpr std::uint32_t kCardBlockNone = 0u << 24;
+constexpr std::uint32_t kCardBlock512 = 1u << 24;
 constexpr std::uint32_t kCardBlock4 = 7u << 24;
 
 // -- protocol re-exports ----------------------------------------------------
@@ -165,6 +163,7 @@ private:
     std::array<std::uint8_t, kRegisterPageSize> regs_{};
     std::vector<std::uint8_t> pool_;
     gekkopak::Device core_;
+    gekkopak::ntr_transport::RegisterTransport transport_;
 };
 
 } // namespace gekkopak::ntr

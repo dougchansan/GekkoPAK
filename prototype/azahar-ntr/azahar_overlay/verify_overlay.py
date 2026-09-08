@@ -14,14 +14,18 @@ checks = {
     # Azahar transport adapter.
     "src/core/hle/device/gekkopak_ntr.cpp": [
         "GekkoPAK NTR virtual cartridge reset",
-        "ntr_transport::Tick",
+        "transport.Tick",
         "GKPAK-TRACE",
     ],
     "src/core/hle/device/gekkopak_ntr.h": ["PhysicalBase = 0x10164000u"],
     # Shared protocol/device core, copied in alongside the adapter.
     "src/gekkopak/protocol.h": ["kWireWriteBlock = 0xF4", "kMagic0 = 0x47"],
     "src/gekkopak/device.h": ["class Device", "kCompletionQueueDepth"],
-    "src/gekkopak/ntr_register_transport.h": ["kRegBlockTx", "inline bool Tick"],
+    "src/gekkopak/ntr_register_transport.h": [
+        "class RegisterTransport",
+        "kCardBlock512",
+        "BlockSizeMismatch",
+    ],
     "src/core/hle/device/gekkopak_device.cpp": ["Device::Exec", "ProcessDescriptorBlock"],
     # Azahar integration points.
     "src/core/hle/kernel/memory.cpp": ["Mapped GekkoPAK NTRCARD window"],

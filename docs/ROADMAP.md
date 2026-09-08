@@ -83,6 +83,7 @@ Deliverables:
 - [x] a host-buildable DSpico shim, so firmware handlers run without hardware
 - [x] cross-target byte-identity check
 - [x] CI gates with every external revision pinned
+- [x] a real ROMCNT/FIFO data phase in the emulator, replacing the staging window
 - [ ] the same vectors replayed on physical hardware
 
 Exit criteria: met, except that the vectors do not yet run on a console. See
