@@ -41,29 +41,32 @@
 #include "gekkopak/protocol.h"
 #include "ntrCardRomGameNoScramble.h"
 
-// Scratch-RAM placement for the cartridge IRQ path.
+// RAM placement for the cartridge IRQ path.
 //
-// SCRATCH_Y is 4 KiB and DSpico's own 22 handlers already fill most of it, so
-// this is a budget, not a free choice: putting every GekkoPAK handler there
-// overflows the region by ~400 bytes. It is spent where the deadline is hard.
+// These handlers must not execute from XIP flash: a fetch on a cold cache costs
+// far more than the ~4.8 us a 32-bit word takes at the 6.7 MHz card clock, and
+// the console does not wait.
 //
-// GEKKOPAK_IRQ_HOT  - handlers with a hard deadline. Every cmd0 (the first code
-//                     to run after an idle bus, and where a block data phase is
-//                     armed) plus F4's cmd1, which arms a 512-byte read.
-// GEKKOPAK_IRQ_COLD - handlers that release the bus in their first two inlined
-//                     statements and only then call into the device. Their own
-//                     placement buys little, because the work they go on to do
-//                     lives in flash regardless.
+// They go in .time_critical, which the Pico linker script puts in main RAM --
+// *not* in a scratch bank. SCRATCH_Y looks like the obvious home, and DSpico's
+// own handlers live there, but core0's stack shares that same 4 KiB region:
 //
-// The host shim has no Pico SDK, so both are no-ops there. The guard is on the
-// shim's own macro rather than the SDK's, so a firmware build that somehow lost
-// the attribute fails loudly instead of quietly running from flash.
+//     .scratch_y      -> SCRATCH_Y   (0x20041000, 4 KiB)
+//     .stack_dummy    -> SCRATCH_Y   __StackBottom = 0x20041a00
+//
+// and the only ASSERT in memmap_default.ld guards RAM, not this. Filling
+// SCRATCH_Y therefore links cleanly and then lets the stack quietly overwrite
+// whatever code sits above __StackBottom. That is not a theoretical hazard: it
+// is what happened, and it killed every GekkoPAK handler on hardware while
+// DSpico's own B8 handler -- which happened to land lower -- kept answering.
+//
+// Main RAM has ~40 KiB spare here and no such overlap, so that is where these
+// belong.
+
 #ifdef GEKKOPAK_HOST_SHIM
-#define GEKKOPAK_IRQ_HOT
-#define GEKKOPAK_IRQ_COLD
+#define GEKKOPAK_IRQ_FN(name) name
 #else
-#define GEKKOPAK_IRQ_HOT __scratch_y("cpu0")
-#define GEKKOPAK_IRQ_COLD
+#define GEKKOPAK_IRQ_FN(name) __not_in_flash_func(name)
 #endif
 
 namespace {
@@ -120,12 +123,12 @@ u32 sF4Complete; // payload fully received, completion callback fired
 u32 sF4Parsed;   // descriptors accepted by the shared core
 u32 sF5Sent;     // F5 data phases armed
 
-GEKKOPAK_IRQ_HOT bool commandMatches(const ntr_rom_emu_t* romEmu, u8 opcode) {
+bool GEKKOPAK_IRQ_FN(commandMatches)(const ntr_rom_emu_t* romEmu, u8 opcode) {
     const u32 expected = (static_cast<u32>(opcode) << 24) | kCommandDiscriminator;
     return (romEmu->cmd0 & kCommandLowMask) == expected;
 }
 
-GEKKOPAK_IRQ_HOT u8 commandIndex(const ntr_rom_emu_t* romEmu) {
+u8 GEKKOPAK_IRQ_FN(commandIndex)(const ntr_rom_emu_t* romEmu) {
     return static_cast<u8>(romEmu->cmd0 & 0xFFu);
 }
 
@@ -165,7 +168,7 @@ void restageCompletionBlock() {
 // Called once the NTR data phase has delivered all 512 bytes. Parsing and job
 // execution happen here rather than in the command handler, so the
 // timing-critical path is only "start a DMA and return".
-GEKKOPAK_IRQ_COLD void blockWriteComplete(ntr_rom_emu_t* romEmu) {
+void GEKKOPAK_IRQ_FN(blockWriteComplete)(ntr_rom_emu_t* romEmu) {
     ++sF4Complete;
     const u32 word = romEmu->cmd1;
     if (sDevice.WriteBlock(commandIndex(romEmu), word, sBlockTx, kBlockBytes) == gp::kOk) {
@@ -175,7 +178,7 @@ GEKKOPAK_IRQ_COLD void blockWriteComplete(ntr_rom_emu_t* romEmu) {
     stageCompletionBlock();
 }
 
-GEKKOPAK_IRQ_HOT void finishCmd0(ntr_rom_emu_t* romEmu) {
+void GEKKOPAK_IRQ_FN(finishCmd0)(ntr_rom_emu_t* romEmu) {
     ntrc_finishGameNoScrambleCmd0(romEmu);
 }
 
@@ -201,11 +204,11 @@ extern "C" void gekkopak_ntr_reset(void) {
 // F0 WRITE_REG
 // --------------------------------------------------------------------------
 
-extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakWriteRegCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakWriteRegCmd0)(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
     finishCmd0(romEmu);
 }
 
-extern "C" GEKKOPAK_IRQ_COLD void ntrc_gekkopakWriteRegCmd1(ntr_rom_emu_t* romEmu, u32 word,
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakWriteRegCmd1)(ntr_rom_emu_t* romEmu, u32 word,
                                                        pio_hw_t* pio) {
     // Release the bus before touching the device: the state machine must be
     // advanced whatever the command turns out to be.
@@ -220,11 +223,11 @@ extern "C" GEKKOPAK_IRQ_COLD void ntrc_gekkopakWriteRegCmd1(ntr_rom_emu_t* romEm
 // F1 EXEC
 // --------------------------------------------------------------------------
 
-extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakExecCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakExecCmd0)(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
     finishCmd0(romEmu);
 }
 
-extern "C" GEKKOPAK_IRQ_COLD void ntrc_gekkopakExecCmd1(ntr_rom_emu_t* romEmu, u32 word,
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakExecCmd1)(ntr_rom_emu_t* romEmu, u32 word,
                                                    pio_hw_t* pio) {
     ntrc_noPayload(pio);
     ntrc_finishGameNoScrambleCmd1(romEmu);
@@ -237,11 +240,11 @@ extern "C" GEKKOPAK_IRQ_COLD void ntrc_gekkopakExecCmd1(ntr_rom_emu_t* romEmu, u
 // F2 READ_REG / EVENT
 // --------------------------------------------------------------------------
 
-extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakReadRegCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakReadRegCmd0)(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
     finishCmd0(romEmu);
 }
 
-extern "C" GEKKOPAK_IRQ_COLD void ntrc_gekkopakReadRegCmd1(ntr_rom_emu_t* romEmu, u32, pio_hw_t* pio) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakReadRegCmd1)(ntr_rom_emu_t* romEmu, u32, pio_hw_t* pio) {
     u32 value = 0;
     if (commandMatches(romEmu, gp::kWireReadReg)) {
         const u8 index = commandIndex(romEmu);
@@ -273,11 +276,11 @@ extern "C" GEKKOPAK_IRQ_COLD void ntrc_gekkopakReadRegCmd1(ntr_rom_emu_t* romEmu
 // F3 WRITE_PAYLOAD_WORD
 // --------------------------------------------------------------------------
 
-extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakPayloadWordCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakPayloadWordCmd0)(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
     finishCmd0(romEmu);
 }
 
-extern "C" GEKKOPAK_IRQ_COLD void ntrc_gekkopakPayloadWordCmd1(ntr_rom_emu_t* romEmu, u32 word,
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakPayloadWordCmd1)(ntr_rom_emu_t* romEmu, u32 word,
                                                           pio_hw_t* pio) {
     ntrc_noPayload(pio);
     ntrc_finishGameNoScrambleCmd1(romEmu);
@@ -290,11 +293,11 @@ extern "C" GEKKOPAK_IRQ_COLD void ntrc_gekkopakPayloadWordCmd1(ntr_rom_emu_t* ro
 // F4 WRITE_BLOCK -- 512 bytes console -> cartridge
 // --------------------------------------------------------------------------
 
-extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakWriteBlockCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakWriteBlockCmd0)(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
     finishCmd0(romEmu);
 }
 
-extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakWriteBlockCmd1(ntr_rom_emu_t* romEmu, u32 word,
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakWriteBlockCmd1)(ntr_rom_emu_t* romEmu, u32 word,
                                                          pio_hw_t* pio) {
     ++sF4Enter;
     const u32 meaningful = word & 0xFFFFu;
@@ -329,7 +332,7 @@ extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakWriteBlockCmd1(ntr_rom_emu_t* romE
 // implementation failed on hardware: it built the block and armed the PIO in
 // cmd1, by which point the console had already begun clocking the data phase.
 
-extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakReadBlockCmd0(ntr_rom_emu_t* romEmu, u32,
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakReadBlockCmd0)(ntr_rom_emu_t* romEmu, u32,
                                                         pio_hw_t* pio) {
     // Arm first, unconditionally. The console programmed a 512-byte data phase
     // and is going to clock it whatever we decide about the command.
@@ -351,7 +354,7 @@ extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakReadBlockCmd0(ntr_rom_emu_t* romEm
     finishCmd0(romEmu);
 }
 
-extern "C" GEKKOPAK_IRQ_HOT void ntrc_gekkopakReadBlockCmd1(ntr_rom_emu_t* romEmu, u32 word,
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakReadBlockCmd1)(ntr_rom_emu_t* romEmu, u32 word,
                                                         pio_hw_t* pio) {
     (void)pio;
     ntrc_finishGameNoScrambleCmd1(romEmu);

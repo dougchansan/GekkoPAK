@@ -33,11 +33,11 @@ checks = {
         "sDevice.Exec",
         "sDevice.WriteBlock",
         "sDevice.PeekBlock",
-        # The two rules the F5 hardware defect came down to: handlers in scratch
-        # RAM, and the cartridge-to-console transfer armed in cmd0 from a buffer
-        # staged in advance. Losing either silently reintroduces the fault.
-        'GEKKOPAK_IRQ_HOT __scratch_y("cpu0")',
-        "void ntrc_gekkopakReadBlockCmd0",
+        # The two rules the F5 hardware defect came down to: handlers out of XIP
+        # flash, and the cartridge-to-console transfer armed in cmd0 from a
+        # buffer staged in advance. Losing either silently reintroduces it.
+        "#define GEKKOPAK_IRQ_FN(name) __not_in_flash_func(name)",
+        "GEKKOPAK_IRQ_FN(ntrc_gekkopakReadBlockCmd0)",
     ],
     # Shared protocol/device core, copied in alongside the adapter.
     "src/gekkopak/protocol.h": [
@@ -63,16 +63,22 @@ for rel, needles in checks.items():
 # before anything else runs. Arming it in cmd1 is what lost the opening words of
 # the data phase on real hardware.
 overlay = (root / "src/gekkopakNtr.cpp").read_text(errors="replace")
-cmd0 = overlay.split("void ntrc_gekkopakReadBlockCmd0", 1)[1].split("}", 1)[0]
+cmd0 = overlay.split("GEKKOPAK_IRQ_FN(ntrc_gekkopakReadBlockCmd0)", 1)[1].split("}", 1)[0]
 if "ntrc_beginWrite(pio, kBlockBytes)" not in cmd0:
     raise SystemExit("F5 must arm its data phase in cmd0, not cmd1")
 
-# SCRATCH_Y is a 4 KiB budget shared with DSpico's own handlers, so not every
-# GekkoPAK handler can live there -- but the ones that arm a data phase must.
-# F2 is deliberately absent: a four-byte response has slack, and it was
-# measured good on hardware from flash while F5 failed in the same firmware.
-for name in ("ntrc_gekkopakReadBlockCmd0", "ntrc_gekkopakWriteBlockCmd1"):
-    if f"GEKKOPAK_IRQ_HOT void {name}" not in overlay:
-        raise SystemExit(f"{name} arms a data phase and must be in scratch RAM")
+# Every handler runs from RAM, and specifically not from SCRATCH_Y: core0's
+# stack shares that bank and no linker assert catches the overlap, so filling it
+# links cleanly and then corrupts the handlers at runtime. That is not
+# hypothetical -- it killed every GekkoPAK handler on hardware while DSpico's
+# own B8 handler, which happened to land lower, kept answering.
+# Check code, not prose: the file explains this hazard at length in comments.
+if any("__scratch_y(" in l for l in overlay.splitlines()
+       if not l.lstrip().startswith("//")):
+    raise SystemExit("handlers must not be in SCRATCH_Y; core0's stack shares it")
+for name in ("ntrc_gekkopakReadBlockCmd0", "ntrc_gekkopakWriteBlockCmd1",
+             "ntrc_gekkopakReadRegCmd1"):
+    if f"void GEKKOPAK_IRQ_FN({name})(" not in overlay:
+        raise SystemExit(f"{name} is on the IRQ path and must not run from flash")
 
 print("DSpico GekkoPAK F0-F5 overlay verification PASS")
