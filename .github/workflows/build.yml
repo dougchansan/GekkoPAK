@@ -20,6 +20,9 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
+      # Gate 1: host protocol/device tests.
+      # Gate 2: golden trace/vector tests, including the DSpico handlers on the
+      #         host shim. Both run here through CTest.
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
@@ -31,3 +34,49 @@ jobs:
           else
             ./build/gekkopak_sim --sweep
           fi
+
+  conformance:
+    name: conformance detail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Run the conformance binary directly rather than through CTest so the
+      # per-target and cross-target results land in the log. A cross-target
+      # disagreement means the emulator and the firmware have drifted apart,
+      # which is the specific failure this project exists to prevent.
+      - name: Build and run golden vectors
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target gekkopak_conformance -j 4
+          ./build/gekkopak_conformance | tee conformance.log
+          grep -q "CONFORMANCE PASS" conformance.log
+          grep -qE "cross-check +PASS" conformance.log
+
+      # Gate 5: the 512-byte block path, checked by name so a vector file that
+      # quietly stops being loaded fails the build.
+      - name: Assert block-transport vectors ran
+        run: |
+          grep -q "loaded block.vec" conformance.log
+          grep -q "loaded lifecycle.vec" conformance.log
+          grep -q "loaded errors.vec" conformance.log
+
+      - name: Run NTR transport model regression
+        run: bash ./prototype/azahar-ntr/scripts/run_model.sh | tee model.log
+
+      - name: Assert the deterministic values have not moved
+        run: |
+          grep -q "checksum=0xf269b734" model.log
+          grep -q "V1 SINGLE PASS transfers=3 modeled=2738 us speedup=1.278x" model.log
+          grep -q "V1 BATCH8 PASS transfers=3" model.log
+          grep -q "modeled/job=2530 us speedup=1.383x" model.log
+
+      - name: Upload conformance logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gekkopak-conformance-logs
+          path: |
+            conformance.log
+            model.log
+          if-no-files-found: ignore

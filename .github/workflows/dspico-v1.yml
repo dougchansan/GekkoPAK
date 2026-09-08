@@ -5,6 +5,10 @@ on:
   push:
     paths:
       - "prototype/dspico-v1/**"
+      - "include/gekkopak/**"
+      - "src/device.cpp"
+      - "tests/conformance/**"
+      - "deps.lock"
       - ".github/workflows/dspico-v1.yml"
 
 concurrency:
@@ -12,18 +16,56 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Gate 3a: the DSpico handlers answer the golden vectors identically to the
+  # emulator. Runs in seconds and needs no cross-toolchain, so a protocol
+  # divergence is reported before anyone waits on an RP2040 build.
+  dspico-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run golden vectors through the DSpico handlers
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target gekkopak_conformance -j 4
+          ./build/gekkopak_conformance | tee dspico-conformance.log
+
+      - name: Assert the DSpico target passed and agrees with the emulator
+        run: |
+          grep -qE "dspico-shim +PASS" dspico-conformance.log
+          grep -qE "azahar-model +PASS" dspico-conformance.log
+          grep -qE "cross-check +PASS" dspico-conformance.log
+          grep -q "CONFORMANCE PASS" dspico-conformance.log
+
+      - name: Upload conformance log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dspico-gekkopak-conformance-log
+          path: dspico-conformance.log
+          if-no-files-found: ignore
+
+  # Gate 3b: the same handlers still compile for the RP2040, against a pinned
+  # upstream firmware revision.
   build-dspico-overlay:
+    needs: dspico-conformance
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
       - name: Checkout GekkoPAK
         uses: actions/checkout@v4
 
-      - name: Checkout DSpico develop
+      - name: Load pinned revisions
+        run: grep -E '^[A-Z_]+=' deps.lock >> "$GITHUB_ENV"
+
+      # Pinned to a commit, not a branch: the whole point of this gate is that
+      # a red result means we changed something.
+      - name: Checkout DSpico firmware at the pinned revision
         uses: actions/checkout@v4
         with:
-          repository: LNH-team/dspico-firmware
-          ref: develop
+          repository: ${{ env.DSPICO_REPO }}
+          ref: ${{ env.DSPICO_COMMIT }}
           path: dspico-src
           submodules: false
 
@@ -31,7 +73,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: raspberrypi/pico-sdk
-          ref: 6a7db34ff63345a7badec79ebea3aaef1712f374
+          ref: ${{ env.PICO_SDK_COMMIT }}
           path: dspico-src/pico-sdk
           submodules: true
 
