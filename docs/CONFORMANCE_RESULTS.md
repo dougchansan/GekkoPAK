@@ -120,35 +120,42 @@ harness.
 It is kept as `tools/testdata/azahar_guest_trace.log` so the checker is
 exercised on every push, not only in the fourteen-minute Azahar job.
 
-### The data phase is now real
+### The data phase is real, and so is the bus
 
 `F4`/`F5` used to carry their 512-byte payload through a staging window inside
-the register page (`0x100`/`0x300`). The protocol above it was exact and the bus
-transfer underneath it was not modelled at all, so Azahar could prove the
-descriptor ABI and the responses while saying nothing about block-size fields or
-the FIFO.
+the register page. The protocol above it was exact and the bus transfer
+underneath it was not modelled at all.
 
-That window is gone. The guest now assembles its block in ordinary RAM,
-programs ROMCNT's block-size field, and streams 128 words through the FIFO,
-acknowledging each one. `CARD_START` stays asserted for the whole transfer, as
-it does on hardware. A guest that programs the wrong block size for its opcode
-is a reported fault rather than something nothing notices.
+That window is gone, and so is the workaround that replaced it. The guest
+assembles its block in ordinary RAM, programs ROMCNT's block-size field, and
+streams 128 words through the FIFO. `CARD_START` stays asserted for the whole
+transfer, and **reading the FIFO is what advances it and clears `DATA_READY`** —
+exactly as on hardware. Nothing acknowledges anything.
 
-The observable protocol did not move: the traced command stream is the same 19
-transactions, in the same order, with the same values. That is the point --
-this changed the transport, not the protocol, and the golden vectors prove it.
+That last part needed a change to Azahar itself. The emulator had no MMIO page
+type at all: Citra's `MMIORegion` was removed, so a mapped page was simply RAM
+and the device could not observe a read. The overlay adds one back — one
+`PageType`, one `VMAType`, four switch cases and two mapping entry points. The
+dynarmic JIT needed no change, because it already falls back to the memory
+callbacks for any page whose pointer is null. See `docs/AZAHAR_MMIO.md`.
 
-**The one remaining emulator-ism is the per-word acknowledgement.** On silicon,
-reading the FIFO clears `DATA_READY` by itself. Azahar has no MMIO page type at
-all -- Citra's `MMIORegion` was removed, and the register page is mapped as
-ordinary backing memory -- so the device cannot observe an individual read and
-cannot auto-clear anything. The guest therefore clears the bit itself. It is the
-same shape as the `CARD_START` handshake the command phase already used, and it
-is the reason the emulator still cannot answer questions about bus *timing*.
+A guest that programs the wrong block size for its opcode, or touches the FIFO
+with no transfer open, is now a reported fault rather than something nothing
+notices.
 
-What Azahar still cannot model: transfer latency, the KEY2 scrambler, the
-cartridge IRQ, and the dropped-first-transaction-after-a-pause behaviour found
-on silicon. Those need a console.
+The observable protocol did not move through any of this: the traced command
+stream is the same 19 transactions, in the same order, with the same values,
+across the staging window, the tick-driven FIFO and the MMIO model. That is the
+point — the transport changed three times and the protocol did not, and the
+golden vectors prove it each time.
+
+**What Azahar still cannot model is time.** A transfer completes as fast as the
+guest can issue loads and stores; there are no card clocks, no latency settings
+and no bus contention. The MMIO hook is what makes modelling them possible, but
+nothing is modelled yet. Also unmodelled: the KEY2 scrambler, the cartridge IRQ,
+and the dropped-first-transaction-after-a-pause behaviour found on silicon.
+Those still need a console.
+
 
 ## DSpico
 
@@ -266,9 +273,9 @@ between N four-byte `F3` transactions and one 512-byte `F4`.
   absent from any documentation, not reproducible in either emulator. The
   host-side workaround is to issue control reads twice and take the second.
 - **Latency configuration and transfer timing.** Azahar now exercises the
-  block-size field and moves every word through the FIFO, but it models no
-  timing at all: a word crosses when the next service tick comes round, not
-  after a number of card clocks.
+  block-size field and dispatches every FIFO access to the device, but models no
+  timing: a word crosses as fast as the guest can issue a load, not after a
+  number of card clocks.
 - **KEY2 scrambling and the mode transition.** Modelled nowhere.
 - **Sustained throughput, alignment effects, maximum command rate, ARM11
   overhead.** All Phase 3 roadmap measurements, all still open.

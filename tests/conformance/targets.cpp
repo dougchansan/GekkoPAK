@@ -96,6 +96,13 @@ std::uint8_t gRegPage[ntr_transport::kRegisterPageSize];
 Device gRegCore;
 ntr_transport::RegisterTransport gRegTransport;
 
+std::uint32_t Read(std::uint32_t offset) {
+    return gRegTransport.Read32(gRegCore, gRegPage, offset);
+}
+void Write(std::uint32_t offset, std::uint32_t value) {
+    gRegTransport.Write32(gRegCore, gRegPage, offset, value);
+}
+
 void RegReset() {
     std::memset(gRegPage, 0, sizeof(gRegPage));
     Device::Config config;
@@ -106,9 +113,10 @@ void RegReset() {
     gRegTransport.Reset(gRegPage);
 }
 
-// Drives a full transaction the way the ARM guest does: stage the command,
-// program the block-size field the opcode requires, then move the data phase
-// through the FIFO a word at a time, acknowledging each one.
+// Drives a full transaction exactly the way the ARM guest does: stage the
+// command, program the block-size field the opcode requires, then move the data
+// phase through the FIFO. Reading the FIFO advances the transfer by itself --
+// there is no acknowledgement, because there is none on hardware.
 bool RegIssue(const std::uint8_t command[8], const std::uint8_t* in, std::size_t in_len,
               std::uint8_t* out, std::size_t out_len) {
     if (out != nullptr) {
@@ -126,39 +134,31 @@ bool RegIssue(const std::uint8_t command[8], const std::uint8_t* in, std::size_t
         return false;
     }
 
-    std::memcpy(gRegPage + ntr_transport::kRegCommand, command, gp::kCommandBytes);
-    ntr_transport::Store32(gRegPage, ntr_transport::kRegRomCnt,
-                           ntr_transport::kCardResetHigh | ntr_transport::kCardActivate |
-                               phase.block_field);
+    std::uint32_t cmd0 = 0;
+    std::uint32_t cmd1 = 0;
+    std::memcpy(&cmd0, command, sizeof(cmd0));
+    std::memcpy(&cmd1, command + 4, sizeof(cmd1));
+    Write(ntr_transport::kRegCommand, cmd0);
+    Write(ntr_transport::kRegCommand + 4, cmd1);
+    Write(ntr_transport::kRegRomCnt, ntr_transport::kCardResetHigh |
+                                         ntr_transport::kCardActivate | phase.block_field);
 
-    std::size_t word = 0;
-    // Bounded so a transport bug fails the test instead of hanging it.
-    for (std::size_t guard = 0; guard < 4u * (words + 8u); ++guard) {
-        gRegTransport.Tick(gRegCore, gRegPage);
-        const std::uint32_t romcnt = ntr_transport::Load32(gRegPage, ntr_transport::kRegRomCnt);
-        if ((romcnt & ntr_transport::kCardActivate) == 0) {
-            return word == words;
-        }
-        if ((romcnt & ntr_transport::kCardDataReady) == 0) {
-            continue;
-        }
-        if (word >= words) {
-            return false; // more words offered than the block size declared
+    for (std::size_t word = 0; word < words; ++word) {
+        if ((Read(ntr_transport::kRegRomCnt) & ntr_transport::kCardDataReady) == 0) {
+            return false; // the cartridge did not offer the word it promised
         }
         if (phase.direction == ntr_transport::PhaseDirection::CartToConsole) {
-            const std::uint32_t value =
-                ntr_transport::Load32(gRegPage, ntr_transport::kRegFifo);
+            const std::uint32_t value = Read(ntr_transport::kRegFifo);
             std::memcpy(out + word * 4u, &value, sizeof(value));
         } else {
             std::uint32_t value = 0;
             std::memcpy(&value, in + word * 4u, sizeof(value));
-            ntr_transport::Store32(gRegPage, ntr_transport::kRegFifo, value);
+            Write(ntr_transport::kRegFifo, value);
         }
-        ++word;
-        ntr_transport::Store32(gRegPage, ntr_transport::kRegRomCnt,
-                               romcnt & ~ntr_transport::kCardDataReady);
     }
-    return false; // transfer never completed
+
+    // The last word ends the transfer, so the activate bit must be clear.
+    return (Read(ntr_transport::kRegRomCnt) & ntr_transport::kCardActivate) == 0;
 }
 
 // ---------------------------------------------------------------------------

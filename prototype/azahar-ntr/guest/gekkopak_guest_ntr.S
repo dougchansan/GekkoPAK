@@ -243,11 +243,9 @@ exec_hi:
  * serviced before waiting on it -- waiting first would deadlock against a
  * cartridge that is waiting for us to take the first word.
  *
- * Per word the cartridge raises CARD_READY; we take (or supply) the word and
- * clear CARD_READY to acknowledge. On silicon reading the FIFO clears that bit
- * by itself; Azahar maps this page as plain memory and cannot see a read, so
- * the acknowledgement is explicit. It is the one emulator-ism left in this
- * path -- see include/gekkopak/ntr_register_transport.h.
+ * CARD_READY says a word is available (or expected). Reading or writing the
+ * FIFO is what consumes it and advances the transfer; there is nothing to
+ * acknowledge, on silicon or in the emulator.
  * ------------------------------------------------------------------------- */
 
 /* r0=wire opcode, r1=index/selector, r2=value word, r3=ROMCNT block-size field.
@@ -290,13 +288,6 @@ wait_ready:
     beq 1b
     bx lr
 
-/* Acknowledge the current word. Clobbers r5. */
-ack_word:
-    ldr r5, [r10, #REG_ROMCNT]
-    bic r5, r5, #CARD_READY
-    str r5, [r10, #REG_ROMCNT]
-    bx lr
-
 /* r0=opcode, r1=index, r2=value. No data phase. */
 wire:
     push {r4-r5, lr}
@@ -312,7 +303,6 @@ wire_read4:
     bl stage_cmd
     bl wait_ready
     ldr r6, [r10, #REG_FIFO]
-    bl ack_word
     bl wait_idle
     mov r0, r6
     pop {r4-r6, pc}
@@ -326,7 +316,6 @@ wire_write_block:
 1:  bl wait_ready
     ldr r4, [r6], #4
     str r4, [r10, #REG_FIFO]
-    bl ack_word
     subs r7, r7, #1
     bne 1b
     bl wait_idle
@@ -341,7 +330,6 @@ wire_read_block:
 1:  bl wait_ready
     ldr r4, [r10, #REG_FIFO]
     str r4, [r6], #4
-    bl ack_word
     subs r7, r7, #1
     bne 1b
     bl wait_idle

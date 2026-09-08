@@ -14,10 +14,11 @@ checks = {
     # Azahar transport adapter.
     "src/core/hle/device/gekkopak_ntr.cpp": [
         "GekkoPAK NTR virtual cartridge reset",
-        "transport.Tick",
+        "transport.Read32",
+        "transport.Write32",
         "GKPAK-TRACE",
     ],
-    "src/core/hle/device/gekkopak_ntr.h": ["PhysicalBase = 0x10164000u"],
+    "src/core/hle/device/gekkopak_ntr.h": ["PhysicalBase = 0x10164000u", "u32 Read32(u32 offset)"],
     # Shared protocol/device core, copied in alongside the adapter.
     "src/gekkopak/protocol.h": ["kWireWriteBlock = 0xF4", "kMagic0 = 0x47"],
     "src/gekkopak/device.h": ["class Device", "kCompletionQueueDepth"],
@@ -27,10 +28,25 @@ checks = {
         "BlockSizeMismatch",
     ],
     "src/core/hle/device/gekkopak_device.cpp": ["Device::Exec", "ProcessDescriptorBlock"],
+    # MMIO page type: the part that touches emulator internals.
+    "src/core/memory.h": ["MMIO,", "void MapMMIORegion(PageTable&"],
+    "src/core/memory.cpp": [
+        "case PageType::MMIO:",
+        "GekkoPakNtr::Read32(vaddr & CITRA_PAGE_MASK)",
+        "GekkoPakNtr::Write32(vaddr & CITRA_PAGE_MASK",
+        "void MemorySystem::MapMMIORegion",
+    ],
+    "src/core/hle/kernel/vm_manager.h": ["MMIO,", "void MakeMMIO(VMAHandle vma)"],
+    "src/core/hle/kernel/vm_manager.cpp": [
+        "case VMAType::MMIO:",
+        "void VMManager::MakeMMIO",
+    ],
     # Azahar integration points.
-    "src/core/hle/kernel/memory.cpp": ["Mapped GekkoPAK NTRCARD window"],
+    "src/core/hle/kernel/memory.cpp": [
+        "Mapped GekkoPAK NTRCARD window",
+        "address_space.MakeMMIO(vma)",
+    ],
     "src/core/hle/kernel/process.cpp": ["0x1EC64000, 0x1000"],
-    "src/core/core.cpp": ["GekkoPakNtr::Tick();"],
     "src/core/CMakeLists.txt": [
         "hle/device/gekkopak_ntr.cpp",
         "hle/device/gekkopak_device.cpp",
