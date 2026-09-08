@@ -85,6 +85,27 @@ typedef struct {
 } gpk_f4_variant_t;
 
 #define GPK_F4_VARIANTS 6
+
+// F5 read sweep: latency x priming, reporting where 'GKC1' actually lands.
+//
+// The completion record is written at offset 0 by the cartridge but arrives at
+// offset 12 behind three words of 0xFF, so the console is clocking the block
+// before the RP2040 drives it. This sweep answers whether that skew is a
+// latency problem (offset shrinks as LATENCY2 rises), a first-transaction
+// problem (priming removes it), or structural (offset stays at 12 throughout).
+#define GPK_F5_VARIANTS 8
+
+typedef struct {
+    const char *name;
+    u32 latency;
+    u32 prime;
+    u32 magic_offset;  // byte offset of 'GKC1', or GPK_F5_NO_MAGIC
+    u32 head0;         // first word as received, for context
+} gpk_f5_variant_t;
+
+#define GPK_F5_NO_MAGIC 0xFFFFFFFFu
+
+u32 gpk_f5_matrix(gpk_f5_variant_t *out);
 u32 gpk_f4_matrix(gpk_f4_variant_t *out);
 
 bool gpk_run_quick(gpk_report_t *r);

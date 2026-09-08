@@ -145,7 +145,23 @@ u32 gpk_cmd_read32(u8 opcode, u8 index, u32 word)
     return value;
 }
 
-void gpk_cmd_read_block(u8 opcode, u8 index, u32 word, void *dst)
+// Block reads get their own latency, separate from the 4-byte register reads.
+//
+// Measured on hardware: the first twelve bytes of an F5 come back as 0xFF and
+// the 'GKC1' record starts at offset 12. The cartridge writes the record at
+// offset 0, so those three words are the console clocking the bus before
+// ntrc_dmaToBus() is feeding it. A single-word read is covered by the priming
+// transaction every other read path already does; a 512-byte one is not.
+u32 gpkLatencyBlockRead = 4;
+
+// Issue a throwaway F5 before the real one when set.
+//
+// A read with meaningfulBytes == 0 is the ideal primer: the cartridge skips
+// popCompletion() but still runs ntrc_beginWrite()/ntrc_dmaToBus(), so the
+// full 512-byte path is exercised without consuming a queued completion.
+u32 gpkPrimeBlockRead = 0;
+
+static void gpk_block_read_once(u8 opcode, u8 index, u32 word, void *dst)
 {
     u32 *out = (u32 *)dst;
     u32 *end = out + (GPK_BLOCK_BYTES / 4);
@@ -153,7 +169,7 @@ void gpk_cmd_read_block(u8 opcode, u8 index, u32 word, void *dst)
     gpk_write_command(opcode, index, word);
     gpk_start(MCCNT1_DIR_READ | MCCNT1_RESET_OFF | MCCNT1_CLK_6_7_MHZ | MCCNT1_LEN_512 |
               GPK_SCRAMBLE_BITS |
-              MCCNT1_LATENCY2(gpkLatencyRead) | MCCNT1_LATENCY1(0));
+              MCCNT1_LATENCY2(gpkLatencyBlockRead) | MCCNT1_LATENCY1(0));
     do {
         if (gpk_data_ready()) {
             u32 w = REG_MCD1;
@@ -162,6 +178,15 @@ void gpk_cmd_read_block(u8 opcode, u8 index, u32 word, void *dst)
         }
         if (++guard > 400000) { gpkTimeouts++; break; }
     } while (gpk_busy());
+}
+
+void gpk_cmd_read_block(u8 opcode, u8 index, u32 word, void *dst)
+{
+    if (gpkPrimeBlockRead) {
+        static u32 discard[GPK_BLOCK_BYTES / 4];
+        gpk_block_read_once(opcode, index, 0, discard);
+    }
+    gpk_block_read_once(opcode, index, word, dst);
 }
 
 void gpk_cmd_write_block(u8 opcode, u8 index, u32 word, const void *src)

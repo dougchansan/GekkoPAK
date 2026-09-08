@@ -145,6 +145,7 @@ static void draw_menu(void)
     iprintf("A  quick test\n");
     iprintf("X  full benchmark\n");
     iprintf("Y  F4 variant matrix\n");
+    iprintf("UP F5 read sweep\n");
     iprintf("B  re-probe link\n");
     iprintf("L  cycle write latency\n");
     iprintf("R  cycle exec settle\n");
@@ -882,6 +883,35 @@ int main(void)
                         (unsigned long)vars[i].parsed);
             }
             gpk_status("F4 matrix done");
+        } else if (keys & KEY_UP) {
+            // F5 read sweep: latency x priming, reporting where 'GKC1' lands.
+            //
+            // The record is written at offset 0 by the cartridge but arrived
+            // at offset 12 behind three words of 0xFF. This says whether that
+            // skew is latency (offset falls as LATENCY2 rises), a dropped
+            // first transaction (priming clears it), or structural (12
+            // regardless of either).
+            gpk_status("F5 sweep");
+            gpk_f5_variant_t fv[GPK_F5_VARIANTS];
+            memset(fv, 0, sizeof(fv));
+            u32 fn = gpk_f5_matrix(fv);
+            LOG("--- F5 sweep ---\n");
+            if (fn == 0) {
+                LOG("link down; not run\n");
+            } else {
+                for (u32 i = 0; i < fn; i++) {
+                    LOG("lat%-2lu %-5s ", (unsigned long)fv[i].latency,
+                        fv[i].name);
+                    if (fv[i].magic_offset == GPK_F5_NO_MAGIC)
+                        LOG("GKC1 absent w0 %08lX\n",
+                            (unsigned long)fv[i].head0);
+                    else
+                        LOG("GKC1 @%-3lu   w0 %08lX\n",
+                            (unsigned long)fv[i].magic_offset,
+                            (unsigned long)fv[i].head0);
+                }
+            }
+            gpk_status("F5 sweep done");
         } else if (keys & KEY_B) {
             // Re-probe the link without disturbing anything else. Cheap, and
             // the first thing worth knowing when a run looks wrong.

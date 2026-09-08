@@ -407,6 +407,62 @@ static void gpk_compute_bandwidth(gpk_report_t *r)
 // primer precedes the write, whether the payload is inline or pre-uploaded, and
 // the write latency. The RP2040 counters are sampled either side of each
 // attempt so every variant reports its own deltas.
+// F5 read sweep.
+//
+// Every variant re-reads the SAME queued completion. A read whose meaningful
+// byte count is zero makes the cartridge skip popCompletion() while still
+// running ntrc_beginWrite()/ntrc_dmaToBus(), so sBlockRx keeps its contents and
+// the 512-byte read path is exercised in full. That means one queued completion
+// is enough for all eight variants, and no variant can starve the ones after it.
+u32 gpk_f5_matrix(gpk_f5_variant_t *out)
+{
+    static const u32 kLatencies[4] = { 4, 16, 32, 63 };
+    const u32 savedLatency = gpkLatencyBlockRead;
+    const u32 savedPrime   = gpkPrimeBlockRead;
+
+    // Queue one completion and take the real F5 that transfers it into the
+    // cartridge's block buffer. Without this the buffer holds nothing to find.
+    gpk_report_t warm;
+    memset(&warm, 0, sizeof(warm));
+    (void)gpk_stage_block_roundtrip(&warm);
+
+    u32 n = 0;
+    for (u32 li = 0; li < 4; li++) {
+        for (u32 pi = 0; pi < 2; pi++) {
+            if (n >= GPK_F5_VARIANTS)
+                break;
+            gpk_f5_variant_t *v = &out[n];
+            v->latency = kLatencies[li];
+            v->prime   = pi;
+            v->name    = pi ? "prime" : "plain";
+
+            gpkLatencyBlockRead = v->latency;
+            gpkPrimeBlockRead   = pi;
+
+            memset(sReadBlock, 0, sizeof(sReadBlock));
+            gpk_read_block(sReadBlock, 0);
+
+            v->head0 = *(const u32 *)sReadBlock;
+            v->magic_offset = GPK_F5_NO_MAGIC;
+            // Scan on 4-byte boundaries: the skew is whole words, and an
+            // unaligned hit would mean something quite different is wrong.
+            for (u32 off = 0; off + 4 <= GPK_BLOCK_BYTES; off += 4) {
+                u32 w;
+                memcpy(&w, sReadBlock + off, sizeof(w));
+                if (w == GPK_COMP_MAGIC) {
+                    v->magic_offset = off;
+                    break;
+                }
+            }
+            n++;
+        }
+    }
+
+    gpkLatencyBlockRead = savedLatency;
+    gpkPrimeBlockRead   = savedPrime;
+    return n;
+}
+
 u32 gpk_f4_matrix(gpk_f4_variant_t *out)
 {
     // Refuse to run on a dead link. The first matrix attempt ran after a USB

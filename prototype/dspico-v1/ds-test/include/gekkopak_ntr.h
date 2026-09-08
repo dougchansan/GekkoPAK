@@ -179,6 +179,8 @@ extern u32 gpkExecSettle;
 void gpk_exec(u8 command);
 
 // Count of bus transfers that never completed; nonzero means a real bus fault.
+extern u32 gpkLatencyBlockRead;
+extern u32 gpkPrimeBlockRead;
 extern u32 gpkTimeouts;
 
 static inline u32 gpk_event_depth(void) { return gpk_read_reg(GPK_REG_EVENT_DEPTH); }
