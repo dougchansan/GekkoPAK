@@ -99,6 +99,27 @@ that the run captures the guest's command stream (`GEKKOPAK_TRACE=1`) so
 `tools/check_azahar_trace.py` can check what the guest actually sent rather than
 only that it reached `PASS`.
 
+The full cold start is 19 transactions:
+
+```
+#0  EXEC HELLO          #7  WRITE_REG  ARG0=4096   #14 WRITE_REG ARG0=handle
+#1  READ_REG RESULT     #8  EXEC ALLOC             #15 EXEC FREE
+#2  READ_REG OUT0       #9  READ_REG RESULT        #16 READ_REG RESULT
+#3  EXEC GET_CAPS       #10 READ_REG OUT0          #17 EXEC COMPLETE
+#4  READ_REG RESULT     #11 WRITE_BLOCK  len=80    #18 READ_REG RESULT
+#5  READ_REG OUT0       #12 READ_REG  event depth
+#6  READ_REG OUT1       #13 READ_BLOCK  len=64
+```
+
+That stream also confirms the byte-order fix on the emulator side end to end:
+`#7` decodes big-endian to `ARG0 = 0x1000`, which is 4096. Read the old way it
+would have been `0x00100000`. `#11` and `#13` likewise confirm the corrected
+`F4`/`F5` word encodings against a real guest rather than against a test
+harness.
+
+It is kept as `tools/testdata/azahar_guest_trace.log` so the checker is
+exercised on every push, not only in the fourteen-minute Azahar job.
+
 **Fidelity gap: `F4`/`F5` in Azahar are not a real data phase.** The 512-byte
 payload is carried through a staging window inside the register page
 (`0x100`/`0x300`) rather than through the ROMCNT FIFO. The protocol semantics

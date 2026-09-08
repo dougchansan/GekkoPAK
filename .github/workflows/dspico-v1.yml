@@ -11,6 +11,13 @@ on:
       - "deps.lock"
       - ".github/workflows/dspico-v1.yml"
 
+# GitHub's default run shell is `bash -e`, which does not set pipefail: a
+# step that pipes into tee would report tee's exit status and swallow the
+# real failure. `shell: bash` selects `bash -eo pipefail`.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: dspico-gekkopak-v1-${{ github.ref }}
   cancel-in-progress: true

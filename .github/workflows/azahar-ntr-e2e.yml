@@ -11,6 +11,13 @@ on:
       - "deps.lock"
       - ".github/workflows/azahar-ntr-e2e.yml"
 
+# GitHub's default run shell is `bash -e`, which does not set pipefail: a
+# step that pipes into tee would report tee's exit status and swallow the
+# real failure. `shell: bash` selects `bash -eo pipefail`.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: azahar-ntr-e2e-${{ github.ref }}
   cancel-in-progress: true
@@ -129,7 +136,8 @@ jobs:
         run: |
           python3 tools/check_azahar_trace.py \
             prototype/azahar-ntr/build/e2e/azahar-ntr-e2e.log \
-            --print-stream | tee prototype/azahar-ntr/build/e2e/trace-check.log
+            --require-block --print-stream \
+            | tee prototype/azahar-ntr/build/e2e/trace-check.log
 
       - name: Upload E2E log
         if: always()

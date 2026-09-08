@@ -148,11 +148,20 @@ def check(commands: list[Command]) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("log", help="Azahar E2E log captured with GEKKOPAK_TRACE=1")
+    # The v1 block-transport guest needs 19 transactions for a cold start:
+    # HELLO, GET_CAPS and ALLOC over F0-F2, then one F4 + one F2 event read +
+    # one F5, then FREE and COMPLETE. The superseded F0-F3 guest needed 46 for
+    # the same work, which is where a higher threshold would have come from.
     parser.add_argument(
         "--min-commands",
         type=int,
-        default=20,
-        help="fail if fewer commands were traced than this (default 20)",
+        default=12,
+        help="fail if fewer commands were traced than this (default 12)",
+    )
+    parser.add_argument(
+        "--require-block",
+        action="store_true",
+        help="fail unless the guest used F4/F5 block transport, not just F0-F3",
     )
     parser.add_argument("--print-stream", action="store_true")
     args = parser.parse_args()
@@ -179,6 +188,12 @@ def main() -> int:
             f"only {len(commands)} commands traced, expected at least {args.min_commands}; "
             "the guest probably did not run to completion"
         )
+
+    if args.require_block:
+        if not any(c.opcode == 0xF4 for c in commands):
+            errors.append("no F4 WRITE_BLOCK: the guest did not use block transport")
+        if not any(c.opcode == 0xF5 for c in commands):
+            errors.append("no F5 READ_BLOCK: the guest did not use block transport")
 
     if errors:
         print("\nTRACE CHECK FAIL")

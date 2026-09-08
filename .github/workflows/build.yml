@@ -4,6 +4,13 @@ on:
   push:
   pull_request:
 
+# GitHub's default run shell is `bash -e`, which does not set pipefail: a
+# step that pipes into tee would report tee's exit status and swallow the
+# real failure. `shell: bash` selects `bash -eo pipefail`.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     strategy:
@@ -70,6 +77,12 @@ jobs:
           grep -q "V1 SINGLE PASS transfers=3 modeled=2738 us speedup=1.278x" model.log
           grep -q "V1 BATCH8 PASS transfers=3" model.log
           grep -q "modeled/job=2530 us speedup=1.383x" model.log
+
+      # The Azahar job is the only place the trace checker runs against a live
+      # guest, and it takes fourteen minutes. Replaying a recorded stream here
+      # keeps the checker itself honest on every push.
+      - name: Check the recorded Azahar guest trace
+        run: python3 tools/check_azahar_trace.py tools/testdata/azahar_guest_trace.log --require-block
 
       - name: Upload conformance logs
         if: always()

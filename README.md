@@ -96,7 +96,14 @@ ARM guest
 GekkoPAK device
 ```
 
-The production ARM guest completes the cold-start sequence in **46 low-level wire transactions**. A stock-Azahar mapped-page development harness reproduces the complete deterministic PASS with ordinary guest CPU loads/stores and a clean shutdown.
+The production ARM guest completes the cold-start sequence in **19 low-level
+wire transactions**, measured from the traced command stream of a passing CI
+run: `HELLO`, `GET_CAPS` and `ALLOC` over `F0`-`F2`, then the steady-state
+`F4` / `F2`-event / `F5` triple, then `FREE` and `COMPLETE`. The superseded
+`F0`-`F3` guest needed 46 for the same work.
+
+A stock-Azahar mapped-page development harness reproduces the complete
+deterministic PASS with ordinary guest CPU loads/stores and a clean shutdown.
 
 See:
 
