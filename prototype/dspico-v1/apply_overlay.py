@@ -29,12 +29,23 @@ def main() -> None:
     for name in ("gekkopakNtr.h", "gekkopakNtr.cpp"):
         shutil.copy2(here / "overlay/src" / name, src / name)
 
+    # The shared GekkoPAK protocol/device core, copied verbatim. This is the
+    # same source Azahar and the host model compile; the firmware differs only
+    # in its transport adapter and its 64 KiB pool.
+    repo = here.parents[1]
+    core_dst = src / "gekkopak"
+    core_dst.mkdir(parents=True, exist_ok=True)
+    for name in ("protocol.h", "device.h"):
+        shutil.copy2(repo / "include/gekkopak" / name, core_dst / name)
+    shutil.copy2(repo / "src/device.cpp", src / "gekkopakDevice.cpp")
+
     cmake = root / "CMakeLists.txt"
     replace_once(
         cmake,
         "  src/ntrCardRomGameNoScramble.h\n  src/ntrCardRomGameSd.cpp\n",
         "  src/ntrCardRomGameNoScramble.h\n"
         "  src/gekkopakNtr.cpp\n"
+        "  src/gekkopakDevice.cpp\n"
         "  src/gekkopakNtr.h\n"
         "  src/ntrCardRomGameSd.cpp\n",
     )
