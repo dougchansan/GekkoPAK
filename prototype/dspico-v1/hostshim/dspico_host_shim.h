@@ -34,6 +34,20 @@ struct CommandResult {
     // True when the handler declared a data phase whose direction did not match
     // what the caller supplied.
     bool direction_mismatch = false;
+    // True when the handler declared a data phase of one length and then
+    // supplied a different number of bytes for it.
+    //
+    // On the RP2040 this desynchronises the bus rather than failing cleanly:
+    // the console clocks out exactly as many words as the directive promised,
+    // so a short handler leaves the console reading undriven data and a long
+    // one leaves words stranded in the FIFO for the *next* transaction to
+    // return first. Either way the payload arrives shifted, which is what an
+    // F5 record appearing at a non-zero byte offset looks like.
+    bool payload_length_mismatch = false;
+    // What the directive promised and what the handler actually supplied,
+    // for diagnostics.
+    std::size_t declared_bytes = 0;
+    std::size_t supplied_bytes = 0;
 };
 
 // Issues one complete NTR transaction.

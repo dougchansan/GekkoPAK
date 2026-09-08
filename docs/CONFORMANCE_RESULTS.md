@@ -142,11 +142,30 @@ correctly aligned record beginning `47 4B 43 31 01 00 00 00`. So the fault is
 selector or length encoding, or the byte order of the payload. All of those are
 now excluded by evidence rather than by argument.
 
-What remains is the 512-byte cartridge-to-console data phase itself: the
-`ntrc_beginWrite` / `ntrc_dmaToBus` pair, the console-side block-size and
-latency configuration, or the interaction between them. A twelve-byte skew is
-three words, which is the shape of a FIFO priming or alignment problem rather
-than a data problem.
+Two further candidates have since been excluded.
+
+The DS-side client encodes the `F5` command correctly:
+`(length << 16) | offset` with selector 1, matching the corrected specification
+and the firmware.
+
+And the handler supplies exactly as many bytes as its FIFO directive promises.
+The host shim now checks that, because a handler that declares one length and
+supplies another does not fail cleanly on hardware -- the console clocks out
+exactly what the directive promised, so a short handler leaves it reading
+undriven data and a long one strands words in the FIFO for the *next*
+transaction to return first. Either way the payload arrives shifted, which is
+precisely what a record at a non-zero byte offset looks like. The check is
+verified to fire: injecting a twelve-byte short DMA into the `F5` handler turns
+seven vectors red, and the real handler passes.
+
+So the fault is not in the command encoding and not in the declared-versus-
+supplied length. What remains is the data phase as the *silicon* runs it: the
+`ntrc_beginWrite` / `ntrc_dmaToBus` pair against the real PIO, the console-side
+block-size and latency configuration, or the interaction between them --
+including the dropped-first-transaction behaviour, which is the one mechanism
+already known to strand a transaction's worth of data. A twelve-byte skew is
+three words, which is the shape of a FIFO priming problem rather than a data
+problem.
 
 This is exactly the split the conformance harness was built to produce: a
 hardware fault that can no longer be confused with a protocol fault.

@@ -115,10 +115,22 @@ CommandResult IssueCommand(const std::uint8_t command[8], const std::uint8_t* in
     if ((directive & 0x80000000u) != 0) {
         // DS -> DSpico read payload.
         const std::size_t expected = (directive & 0x7FFFFFFFu) + 1u;
+        result.declared_bytes = expected;
+        result.supplied_bytes = in_bytes;
         if (in_data == nullptr || in_bytes < expected) {
             result.direction_mismatch = true;
             return result;
         }
+
+        // Upstream's convention is readDataLimit = (payloadLength >> 2) + 1.
+        // Check it, because a handler that sets the limit itself rather than
+        // going through ntrc_finishGameNoScrambleCmd1WithReadPayload() would
+        // otherwise desynchronise the dispatcher silently.
+        const std::size_t expected_limit = (expected >> 2) + 1u;
+        if (gRomEmu.readDataLimit != expected_limit) {
+            result.payload_length_mismatch = true;
+        }
+
         // ntrCardIrq.S applies `rev` to each received word before storing, so
         // bytes land in cartridge SRAM in the order the DS emitted them.
         std::memcpy(gRomEmu.readDataDestination, in_data, expected);
@@ -130,6 +142,7 @@ CommandResult IssueCommand(const std::uint8_t command[8], const std::uint8_t* in
 
     // DSpico -> DS write payload.
     const std::size_t declared = directive + 1u;
+    result.declared_bytes = declared;
     if (out == nullptr || out_capacity < declared) {
         result.direction_mismatch = true;
         return result;
@@ -137,6 +150,13 @@ CommandResult IssueCommand(const std::uint8_t command[8], const std::uint8_t* in
     std::memset(out, 0, declared);
 
     if (gDmaData != nullptr) {
+        // The console clocks out exactly `declared` bytes whatever the handler
+        // supplies, so a DMA of the wrong length is a bus desync, not a short
+        // read. Report it rather than quietly zero-padding.
+        result.supplied_bytes = gDmaLength;
+        if (gDmaLength != declared) {
+            result.payload_length_mismatch = true;
+        }
         const std::size_t copy = gDmaLength < declared ? gDmaLength : declared;
         std::memcpy(out, gDmaData, copy);
         result.response_bytes = copy;
@@ -153,6 +173,13 @@ CommandResult IssueCommand(const std::uint8_t command[8], const std::uint8_t* in
         out[written + 2] = static_cast<std::uint8_t>(word >> 16);
         out[written + 3] = static_cast<std::uint8_t>(word >> 24);
         written += 4;
+    }
+    // Words the handler pushed beyond the declared length would be stranded in
+    // the FIFO on hardware and returned first by the *next* transaction, which
+    // is exactly how a payload ends up shifted by a few words.
+    result.supplied_bytes = (gFifoCount - 1) * 4u;
+    if (result.supplied_bytes != declared) {
+        result.payload_length_mismatch = true;
     }
     result.response_bytes = written;
     return result;

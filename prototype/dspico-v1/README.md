@@ -62,7 +62,13 @@ cmake --build build --target gekkopak_conformance
 
 The shim models the cmd0/cmd1 dispatch, the PIO FIFO directive protocol, the
 read-payload callback, the DMA response, and the wire byte order the PIO shift
-directions imply. It does not model timing, the IRQ, scrambling, or the
+directions imply. It also checks that a handler supplies exactly as many bytes
+as its directive declared: on hardware the console clocks out exactly what the
+directive promised, so a short handler leaves it reading undriven data and a
+long one strands words in the FIFO for the next transaction, and either way the
+payload arrives shifted rather than failing cleanly.
+
+It does not model timing, the IRQ, scrambling, or the
 dropped-first-transaction-after-a-pause behaviour; those are properties of the
 silicon and still need a console.
 

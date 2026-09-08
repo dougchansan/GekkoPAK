@@ -161,7 +161,11 @@ bool DspicoIssue(const std::uint8_t command[8], const std::uint8_t* in, std::siz
     }
     const dspico_shim::CommandResult result =
         dspico_shim::IssueCommand(command, in, in_len, out, out_len);
-    return !result.direction_mismatch;
+    // A handler that declares one data-phase length and then supplies another
+    // does not fail cleanly on hardware -- it shifts the payload and leaves the
+    // next transaction desynchronised. Treat it as a conformance failure here,
+    // where it is still cheap to find.
+    return !result.direction_mismatch && !result.payload_length_mismatch;
 }
 
 } // namespace
