@@ -407,24 +407,26 @@ static void gpk_compute_bandwidth(gpk_report_t *r)
 // primer precedes the write, whether the payload is inline or pre-uploaded, and
 // the write latency. The RP2040 counters are sampled either side of each
 // attempt so every variant reports its own deltas.
-// F5 read sweep.
+// F5 read sweep: one full round trip per variant.
 //
-// Every variant re-reads the SAME queued completion. A read whose meaningful
-// byte count is zero makes the cartridge skip popCompletion() while still
-// running ntrc_beginWrite()/ntrc_dmaToBus(), so sBlockRx keeps its contents and
-// the 512-byte read path is exercised in full. That means one queued completion
-// is enough for all eight variants, and no variant can starve the ones after it.
+// The first version of this reused a single queued completion by reading with
+// meaningfulBytes == 0, on the assumption that the cartridge would skip
+// popCompletion() but still return the buffer. It does skip the pop - but
+// gekkopakNtr.cpp does sBlockRx.fill(0) BEFORE that check, so a zero-length
+// read wipes the buffer and hands back 512 zeros. Every variant duly reported
+// "GKC1 absent", which measured the probe rather than the transport.
+//
+// So each variant now submits its own descriptor and reads the completion back
+// for real. Eight round trips is cheap, and an offset of 0 means the record
+// genuinely arrived aligned rather than merely failing to contradict it.
+//
+// depth is recorded alongside: a variant whose F4 queued nothing says nothing
+// about F5 alignment, and the two must not be confused for one another.
 u32 gpk_f5_matrix(gpk_f5_variant_t *out)
 {
     static const u32 kLatencies[4] = { 4, 16, 32, 63 };
     const u32 savedLatency = gpkLatencyBlockRead;
     const u32 savedPrime   = gpkPrimeBlockRead;
-
-    // Queue one completion and take the real F5 that transfers it into the
-    // cartridge's block buffer. Without this the buffer holds nothing to find.
-    gpk_report_t warm;
-    memset(&warm, 0, sizeof(warm));
-    (void)gpk_stage_block_roundtrip(&warm);
 
     u32 n = 0;
     for (u32 li = 0; li < 4; li++) {
@@ -439,8 +441,10 @@ u32 gpk_f5_matrix(gpk_f5_variant_t *out)
             gpkLatencyBlockRead = v->latency;
             gpkPrimeBlockRead   = pi;
 
-            memset(sReadBlock, 0, sizeof(sReadBlock));
-            gpk_read_block(sReadBlock, 0);
+            gpk_report_t rep;
+            memset(&rep, 0, sizeof(rep));
+            (void)gpk_stage_block_roundtrip(&rep);
+            v->depth = rep.event_depth;
 
             v->head0 = *(const u32 *)sReadBlock;
             v->magic_offset = GPK_F5_NO_MAGIC;

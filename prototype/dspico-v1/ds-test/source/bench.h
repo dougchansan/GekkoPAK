@@ -101,6 +101,7 @@ typedef struct {
     u32 prime;
     u32 magic_offset;  // byte offset of 'GKC1', or GPK_F5_NO_MAGIC
     u32 head0;         // first word as received, for context
+    u32 depth;         // completions queued by this variant's F4
 } gpk_f5_variant_t;
 
 #define GPK_F5_NO_MAGIC 0xFFFFFFFFu

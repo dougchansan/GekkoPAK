@@ -902,11 +902,15 @@ int main(void)
                 for (u32 i = 0; i < fn; i++) {
                     LOG("lat%-2lu %-5s ", (unsigned long)fv[i].latency,
                         fv[i].name);
-                    if (fv[i].magic_offset == GPK_F5_NO_MAGIC)
-                        LOG("GKC1 absent w0 %08lX\n",
+                    if (fv[i].depth == 0)
+                        LOG("F4 queued none\n");
+                    else if (fv[i].magic_offset == GPK_F5_NO_MAGIC)
+                        LOG("d%lu GKC1 absent w0 %08lX\n",
+                            (unsigned long)fv[i].depth,
                             (unsigned long)fv[i].head0);
                     else
-                        LOG("GKC1 @%-3lu   w0 %08lX\n",
+                        LOG("d%lu GKC1 @%-3lu w0 %08lX\n",
+                            (unsigned long)fv[i].depth,
                             (unsigned long)fv[i].magic_offset,
                             (unsigned long)fv[i].head0);
                 }
