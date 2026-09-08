@@ -63,9 +63,15 @@ const Device::Allocation* Device::AllocationForHandle(u32 handle) const {
 }
 
 u32 Device::Allocate(u32 bytes) {
-    bytes = AlignUp4(bytes);
+    // Check before rounding up: AlignUp4 wraps near UINT32_MAX, and a request
+    // that wrapped to a small number would be granted a buffer far smaller than
+    // it asked for.
     if (bytes == 0 || bytes > config_.pool_bytes || config_.pool == nullptr) {
         return 0;
+    }
+    bytes = AlignUp4(bytes);
+    if (bytes > config_.pool_bytes) {
+        return 0; // rounding up crossed the end of the pool
     }
 
     std::size_t slot = kMaxAllocations;
@@ -390,6 +396,11 @@ u32 Device::ProcessDescriptorBlock(const u8* data, std::size_t len) {
         return kBadDescriptor;
     }
 
+    // A completion the queue could not hold is not a slow answer, it is a lost
+    // one. Report it rather than leaving the client to conclude the job never
+    // ran; on hardware that distinction is expensive to make.
+    bool dropped = false;
+
     // The whole batch shares one block round trip, so each job is charged its
     // share of it. This is what makes batching visible in the modeled numbers.
     const u32 batch_size = static_cast<u32>(count);
@@ -412,7 +423,7 @@ u32 Device::ProcessDescriptorBlock(const u8* data, std::size_t len) {
         if (input == nullptr || desc.input_offset > input->size ||
             desc.input_length > input->size - desc.input_offset) {
             completion.status = static_cast<u16>(kBadHandle);
-            PushCompletion(completion);
+            dropped |= !PushCompletion(completion);
             continue;
         }
 
@@ -422,7 +433,7 @@ u32 Device::ProcessDescriptorBlock(const u8* data, std::size_t len) {
             input->uploaded = Max32(input->uploaded, desc.input_offset + desc.input_length);
         } else if (input->uploaded < desc.input_offset + desc.input_length) {
             completion.status = static_cast<u16>(kBadDescriptor);
-            PushCompletion(completion);
+            dropped |= !PushCompletion(completion);
             continue;
         }
 
@@ -431,7 +442,7 @@ u32 Device::ProcessDescriptorBlock(const u8* data, std::size_t len) {
             if (output == nullptr || desc.output_offset > output->size ||
                 desc.output_length > output->size - desc.output_offset) {
                 completion.status = static_cast<u16>(kBadHandle);
-                PushCompletion(completion);
+                dropped |= !PushCompletion(completion);
                 continue;
             }
         }
@@ -445,7 +456,7 @@ u32 Device::ProcessDescriptorBlock(const u8* data, std::size_t len) {
         }
         if (slot == kMaxJobs) {
             completion.status = static_cast<u16>(kQueueFull);
-            PushCompletion(completion);
+            dropped |= !PushCompletion(completion);
             continue;
         }
 
@@ -469,10 +480,10 @@ u32 Device::ProcessDescriptorBlock(const u8* data, std::size_t len) {
         completion.modeled_us = job.modeled_us;
         completion.speedup_x1000 = job.speedup_x1000;
         completion.checksum = job.checksum;
-        PushCompletion(completion);
+        dropped |= !PushCompletion(completion);
     }
 
-    return kOk;
+    return dropped ? kQueueFull : kOk;
 }
 
 u32 Device::WriteBlock(u8 selector, u32 word, const u8* data, std::size_t data_bytes) {

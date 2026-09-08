@@ -390,3 +390,192 @@ note This split matters: a malformed block is rejected at the transport, while
 note a well-formed request that cannot be served is reported per descriptor, so
 note one bad job in a batch of eight does not discard the other seven.
 end
+
+vector completion_queue_overflow
+desc A completion that will not fit is reported, not silently dropped
+
+cmd F0 47 4B 00 00 00 10 00
+data none
+cmd F1 47 4B 03 00 00 00 01
+data none
+
+cmd F3 47 4B 00 11 22 33 44
+data none
+cmd F3 47 4B 01 55 66 77 88
+data none
+cmd F3 47 4B 02 AA BB CC DD
+data none
+cmd F3 47 4B 03 0B AD F0 0D
+data none
+cmd F0 47 4B 00 00 00 00 01
+data none
+cmd F0 47 4B 04 00 00 00 10
+data none
+cmd F1 47 4B 04 00 00 00 02
+data none
+
+# Two full batches of eight fill the sixteen-deep completion queue exactly.
+cmd F4 47 4B 00 00 00 02 00
+data in 512
+payload@ 0   47 4B 44 31
+payload@ 4   01 00 01 00
+payload@ 8   01 00 00 00
+payload@ 16  01 00 00 00
+payload@ 24  10 00 00 00
+payload@ 40  01 00 00 00
+payload@ 44  90 D0 03 00
+payload@ 64  47 4B 44 31
+payload@ 68  01 00 01 00
+payload@ 72  02 00 00 00
+payload@ 80  01 00 00 00
+payload@ 88  10 00 00 00
+payload@ 104 01 00 00 00
+payload@ 108 90 D0 03 00
+payload@ 128 47 4B 44 31
+payload@ 132 01 00 01 00
+payload@ 136 03 00 00 00
+payload@ 144 01 00 00 00
+payload@ 152 10 00 00 00
+payload@ 168 01 00 00 00
+payload@ 172 90 D0 03 00
+payload@ 192 47 4B 44 31
+payload@ 196 01 00 01 00
+payload@ 200 04 00 00 00
+payload@ 208 01 00 00 00
+payload@ 216 10 00 00 00
+payload@ 232 01 00 00 00
+payload@ 236 90 D0 03 00
+payload@ 256 47 4B 44 31
+payload@ 260 01 00 01 00
+payload@ 264 05 00 00 00
+payload@ 272 01 00 00 00
+payload@ 280 10 00 00 00
+payload@ 296 01 00 00 00
+payload@ 300 90 D0 03 00
+payload@ 320 47 4B 44 31
+payload@ 324 01 00 01 00
+payload@ 328 06 00 00 00
+payload@ 336 01 00 00 00
+payload@ 344 10 00 00 00
+payload@ 360 01 00 00 00
+payload@ 364 90 D0 03 00
+payload@ 384 47 4B 44 31
+payload@ 388 01 00 01 00
+payload@ 392 07 00 00 00
+payload@ 400 01 00 00 00
+payload@ 408 10 00 00 00
+payload@ 424 01 00 00 00
+payload@ 428 90 D0 03 00
+payload@ 448 47 4B 44 31
+payload@ 452 01 00 01 00
+payload@ 456 08 00 00 00
+payload@ 464 01 00 00 00
+payload@ 472 10 00 00 00
+payload@ 488 01 00 00 00
+payload@ 492 90 D0 03 00
+
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+note first eight: accepted
+
+cmd F4 47 4B 00 00 00 02 00
+data in 512
+payload@ 0   47 4B 44 31
+payload@ 4   01 00 01 00
+payload@ 8   09 00 00 00
+payload@ 16  01 00 00 00
+payload@ 24  10 00 00 00
+payload@ 40  01 00 00 00
+payload@ 44  90 D0 03 00
+payload@ 64  47 4B 44 31
+payload@ 68  01 00 01 00
+payload@ 72  0A 00 00 00
+payload@ 80  01 00 00 00
+payload@ 88  10 00 00 00
+payload@ 104 01 00 00 00
+payload@ 108 90 D0 03 00
+payload@ 128 47 4B 44 31
+payload@ 132 01 00 01 00
+payload@ 136 0B 00 00 00
+payload@ 144 01 00 00 00
+payload@ 152 10 00 00 00
+payload@ 168 01 00 00 00
+payload@ 172 90 D0 03 00
+payload@ 192 47 4B 44 31
+payload@ 196 01 00 01 00
+payload@ 200 0C 00 00 00
+payload@ 208 01 00 00 00
+payload@ 216 10 00 00 00
+payload@ 232 01 00 00 00
+payload@ 236 90 D0 03 00
+payload@ 256 47 4B 44 31
+payload@ 260 01 00 01 00
+payload@ 264 0D 00 00 00
+payload@ 272 01 00 00 00
+payload@ 280 10 00 00 00
+payload@ 296 01 00 00 00
+payload@ 300 90 D0 03 00
+payload@ 320 47 4B 44 31
+payload@ 324 01 00 01 00
+payload@ 328 0E 00 00 00
+payload@ 336 01 00 00 00
+payload@ 344 10 00 00 00
+payload@ 360 01 00 00 00
+payload@ 364 90 D0 03 00
+payload@ 384 47 4B 44 31
+payload@ 388 01 00 01 00
+payload@ 392 0F 00 00 00
+payload@ 400 01 00 00 00
+payload@ 408 10 00 00 00
+payload@ 424 01 00 00 00
+payload@ 428 90 D0 03 00
+payload@ 448 47 4B 44 31
+payload@ 452 01 00 01 00
+payload@ 456 10 00 00 00
+payload@ 464 01 00 00 00
+payload@ 472 10 00 00 00
+payload@ 488 01 00 00 00
+payload@ 492 90 D0 03 00
+
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 00 00 00 00
+note second eight: still accepted, the queue is now exactly full
+
+cmd F2 47 4B FE 00 00 00 00
+data out 4
+expect@ 0 10 00 00 00
+note sixteen queued
+
+cmd F4 47 4B 00 00 00 00 40
+data in 512
+payload@ 0  47 4B 44 31
+payload@ 4  01 00 01 00
+payload@ 8  11 00 00 00
+payload@ 16 01 00 00 00
+payload@ 24 10 00 00 00
+payload@ 40 01 00 00 00
+payload@ 44 90 D0 03 00
+
+cmd F2 47 4B 05 00 00 00 00
+data out 4
+expect@ 0 07 00 00 00
+note QueueFull = 7. The seventeenth job ran but its completion had nowhere to
+note go, and the client is told so. Silently dropping it would look exactly like
+note a job that never executed, which is the most expensive kind of failure to
+note diagnose on hardware.
+
+cmd F2 47 4B FE 00 00 00 00
+data out 4
+expect@ 0 10 00 00 00
+note still sixteen; nothing was overwritten
+
+cmd F5 47 4B 01 02 00 00 00
+data out 512
+expect@ 0  47 4B 43 31
+expect@ 8  01 00 00 00
+expect@ 448 47 4B 43 31
+expect@ 456 08 00 00 00
+note draining returns the first eight in order, oldest first
+end

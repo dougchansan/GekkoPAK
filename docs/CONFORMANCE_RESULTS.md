@@ -39,7 +39,7 @@ should be read as a hardware performance result.
 
 ## Host conformance
 
-14 vectors, 172 wire transactions, three targets.
+15 vectors, 190 wire transactions, three targets.
 
 | Result | Status |
 |---|---|
@@ -51,8 +51,9 @@ should be read as a hardware performance result.
 Coverage: the full `HELLO`..`COMPLETE` lifecycle; the `GK` discriminator; bad
 opcodes; bad handles on every command that takes one; allocation limits;
 `COLLECT` before ready; out-of-range register indices; `F4`/`F5` single and
-batch-8; block rejections; per-descriptor failure inside an accepted block; and
-a 256-byte round trip whose ramp covers every byte value.
+batch-8; block rejections; per-descriptor failure inside an accepted block;
+completion-queue overflow; and a 256-byte round trip whose ramp covers every
+byte value.
 
 Deterministic values pinned rather than derived:
 
