@@ -505,6 +505,187 @@ The firmware UF2 is not listed: it embeds the user-supplied boot ROM, so its
 hash is specific to the machine that built it and is recorded with the results
 of a run rather than here.
 
+## Host link — driving the cartridge from a PC
+
+Collecting results has been the slowest part of this bring-up, and by some
+distance. Each hypothesis cost a build, a copy to the SD card, a card swap, a
+console boot, a photograph and a reading of the photograph. That is why the raw
+F5 diagnostic was designed to answer several questions per boot: the cycle, not
+the difficulty of the faults, was the dominant cost.
+
+It is also why the visible failures have been ambiguous. `F4cnt e27 a27 c27 p7`
+says twenty blocks arrived complete and were rejected, and the screen has no
+room to say by what, in which order, or how far apart.
+
+### Why not the USB that was already there
+
+DSpico has a USB path, but it runs the wrong way for this. Upstream exposes the
+RP2040's device controller **to the console**, over card commands `E8`–`EB`, so
+the ARM9 can run a USB stack across the cartridge bus. That is the right design
+for a flashcart serving disk sectors and the wrong one for measuring a cartridge
+protocol: USB traffic *is* card traffic, so the results channel and the thing
+being measured are the same wire.
+
+The consequences were already recorded in the DS application. Its CDC transcript
+is opt-in on `SELECT`, and starting it at boot wedged the cartridge — `B8` read
+`FFFFFFFF` where the previous build read `C00000C2`. It can only report after a
+run, never during one, and it has to be off entirely for a timing campaign.
+
+### What replaced it
+
+The cartridge owns the same controller from its own side instead, and presents a
+CDC serial port on the RP2040's USB connector. That connector is reachable while
+the cartridge is seated, and it is off the NTR bus completely, so the link costs
+the transport nothing and stays up while the console runs, reboots or hangs.
+
+There is one device controller, so the two designs are mutually exclusive. A
+`--host-link` build drops upstream's proxy, its event queue and its flattened
+TinyUSB fragment, and brings in a complete TinyUSB tree — the one `ds-test`
+already vendors, so the repository carries one copy and a hardware result has one
+version to account for. The `E8`–`EB` dispatch entries stay and point at
+handlers that answer correctly and do nothing: an overlay that rewrites a
+hand-written assembly jump table is an overlay that stops applying the next time
+upstream touches that file.
+
+Four things the firmware had to be told, each of which would otherwise have cost
+a hardware round trip to discover:
+
+| | |
+|---|---|
+| `pwr_initPowerSaving()` stops `clk_usb` and deinitialises `pll_usb` | so the controller has no clock until `pwr_disableUsbPowerSaving()` puts it back |
+| `USBCTRL_IRQ` stays at `0x80`, the cartridge IRQ at `0x40` | a late USB packet is a slow link; a late data phase is a corrupted transfer |
+| `resetNtrCard()` tears USB down on every console reset | which is exactly when a transcript matters most, so `ntrc_resetUsb()` becomes a no-op |
+| the idle loop must not `__wfi()` | it would park core0 until the next cartridge interrupt, which never comes if the console is off or hung — the two cases a host most needs to ask about |
+
+`core1` was not an option: it runs the scrambler ring generator with all
+interrupts masked.
+
+### The event ring
+
+The link's producer half is a lock-free ring written from the cartridge IRQ
+(`gekkopakTrace.h`). `gpk_trace()` is a mask test, a few stores and a pointer
+bump, in RAM, and it drops rather than waits when full — a dropped record is a
+reported fact, a stalled IRQ is a corrupted data phase.
+
+**The mask defaults to zero.** Tracing is opt-in per category, so a timing
+campaign measures the transport rather than the transport plus instrumentation.
+`test_dspico_trace.cpp` asserts that a full submit-and-collect round trip leaves
+no trace at all by default.
+
+What it records is deliberately more than the wire carries — the F4 disposition,
+the descriptor result code, which buffer an F5 was armed from — because those
+are precisely the outcomes the console cannot distinguish. A block that was
+refused, one that was delivered and rejected, and one that was never sent all
+look identical from the DS.
+
+### Line protocol
+
+ASCII, newline-terminated, both directions. Documented here as well as in the
+code because the harness parses it and the two are checked against each other by
+`tests/test_harness_protocol.py`.
+
+Commands (one character, optional hex argument):
+
+| | |
+|---|---|
+| `?` | banner |
+| `s` | status snapshot |
+| `t` / `t<hex>` | report / set the trace mask |
+| `p` | drain pending trace records |
+| `d` `g` `x` | dump the staged completion block / the diagnostic pattern / the last block an F4 delivered |
+| `z` | reset device state, leaving the card transport alone |
+| `B` | reboot into BOOTSEL |
+
+Responses:
+
+| | |
+|---|---|
+| `# <text>` | banner; carries the grammar version |
+| `S <key>=<hex> …` | status |
+| `T <us> <kind> <index> <aux> <value>` | one trace record, all hex |
+| `P <emitted> <dropped>` | end of a drain |
+| `X <offset> <64 hex chars>` | 32 bytes of a block dump |
+| `K <cmd> [value]` | acknowledgement, and the terminator of a dump |
+| `E <text>` | error |
+
+Every response that can span multiple lines ends with a terminator, because the
+grammar carries no length prefix and a truncated dump that looks complete is
+worse than no dump.
+
+### Using it
+
+```bash
+python tools/gpk_harness.py ports          # is it there?
+python tools/gpk_harness.py status         # counters, queue depth, RESULT
+python tools/gpk_harness.py watch          # trace plus a running counter diff
+python tools/gpk_harness.py dump staged    # the block an F5 would send now
+python tools/gpk_harness.py flash <uf2>    # no BOOTSEL button
+```
+
+Needs `pyserial`. The cartridge is USB-powered, so all of it works with the
+cartridge on the desk and no console at all; with a console attached it works
+while that console runs.
+
+`flash` sends `B`, waits for the `RPI-RP2` drive, copies the image, and then
+waits for the link to answer again — enumerating and answering being different
+things. If the cartridge comes back without a link, the image was not a
+`--host-link` build, and the harness says so rather than timing out silently.
+
+### Which image to use
+
+Two variants, built from the same overlay:
+
+| Image | Use |
+|---|---|
+| `DSpico-GekkoPAK.uf2` | measurements. The plainest firmware that can produce the number. |
+| `DSpico-GekkoPAK-link.uf2` | diagnosis. Everything above, plus the link. |
+
+Keeping them separate is not caution about the instrumentation's cost — the mask
+defaults to zero and the trace call compiles to a load, a shift and a branch —
+but about the USB stack sharing core0's main loop with the SD pump. A timing
+result should not have to argue about that.
+
+### Build
+
+```bash
+./prototype/dspico-v1/build_firmware.sh <workdir> <repo> <default.nds>
+GEKKOPAK_HOST_LINK=1 ./prototype/dspico-v1/build_firmware.sh <workdir> <repo> <default.nds>
+```
+
+Both variants are built and checked in CI, including the assertion the first
+hardware run died on: every cartridge IRQ symbol in main RAM, never in XIP
+flash. That now covers the trace writer, which runs inside those handlers.
+
+### Measured, this session
+
+| | plain | host link |
+|---|---|---|
+| `.scratch_y` | 3624 / 4096 | 2712 / 4096 |
+| text | 308308 | 318412 |
+| bss | 217408 | 189640 |
+| UF2 | 616960 B | 636928 B |
+
+The link build uses *less* SCRATCH_Y, not more: dropping upstream's USB proxy
+takes its `__scratch_y("cpu0")` handlers with it. Both are well clear of the
+overlap that killed the first hardware run, where the region had been extended
+past `__StackBottom`.
+
+UF2 hashes are recorded with the run that used them rather than here, because
+they embed the user-supplied boot ROM and so are specific to the build host.
+
+### What this does not automate
+
+The console's power button. Repeated cold-start passes still need someone to
+press it. A transistor across that switch driven from a spare GPIO would close
+the loop; a second Pico is a better fit for it than a Flipper Zero, being
+directly scriptable from the same harness.
+
+Independent timing ground truth is also still missing. Every number available
+today is the cartridge measuring itself or the console measuring itself. A PIO
+capture of the NTR clock and data lines would make those numbers measurements
+rather than another model, which matters for the distinction this project draws
+between modelled and measured performance.
+
 ## Running it
 
 1. Reinsert the DSpico's microSD into the DSpico (it must not be in the PC
