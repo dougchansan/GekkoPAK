@@ -211,6 +211,43 @@ extern "C" void gekkopak_ntr_reset(void) {
 }
 
 // --------------------------------------------------------------------------
+// Introspection
+// --------------------------------------------------------------------------
+//
+// Off the IRQ path entirely: the host link calls these from the main loop
+// between transactions. They read the same variables the handlers maintain
+// rather than keeping a parallel copy, so a report cannot drift from what the
+// cartridge actually did.
+
+extern "C" const u8* gekkopak_ntr_buffer(u32 which) {
+    switch (which) {
+        case GEKKOPAK_BUFFER_STAGED:
+            return sBlockRx[sStageIndex];
+        case GEKKOPAK_BUFFER_DIAG:
+            return sBlockDiag;
+        case GEKKOPAK_BUFFER_LAST_IN:
+            return sBlockTx;
+        default:
+            return nullptr;
+    }
+}
+
+extern "C" void gekkopak_ntr_state(gekkopak_ntr_state_t* out) {
+    out->f4_enter = sF4Enter;
+    out->f4_accepted = sF4Accepted;
+    out->f4_complete = sF4Complete;
+    out->f4_parsed = sF4Parsed;
+    out->f5_sent = sF5Sent;
+    out->staged_bytes = sStagedBytes;
+    out->stage_index = sStageIndex;
+    out->local_bytes = kLocalBytes;
+    // Reading a register is how the console would ask, so the link asks the
+    // same way and cannot report a value the console could not have seen.
+    out->event_depth = sDevice.ReadReg(gp::kEventCompletionDepth);
+    out->result = sDevice.ReadReg(gp::kResult);
+}
+
+// --------------------------------------------------------------------------
 // F0 WRITE_REG
 // --------------------------------------------------------------------------
 
