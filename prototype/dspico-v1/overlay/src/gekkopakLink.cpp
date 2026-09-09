@@ -204,6 +204,11 @@ void emitBlock(u32 which) {
         }
         putChar('\n');
     }
+    // Terminator. The grammar carries no length prefix, so without this a
+    // reader cannot tell a complete dump from one that is still arriving.
+    put("K b ");
+    putHexShort(kBlockBytes);
+    putChar('\n');
 }
 
 // --------------------------------------------------------------------------

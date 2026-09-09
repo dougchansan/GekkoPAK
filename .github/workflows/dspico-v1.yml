@@ -45,6 +45,9 @@ jobs:
           grep -qE "cross-check +PASS" dspico-conformance.log
           grep -q "CONFORMANCE PASS" dspico-conformance.log
 
+      - name: Check the host harness agrees with the firmware link grammar
+        run: python3 tests/test_harness_protocol.py
+
       - name: Upload conformance log
         if: always()
         uses: actions/upload-artifact@v4
@@ -110,6 +113,52 @@ jobs:
           test -f dspico-src/build-gekkopak/DSpico.uf2
           arm-none-eabi-size dspico-src/build-gekkopak/DSpico.elf
 
+      # The host-link variant. It removes upstream's DS-side USB proxy and
+      # brings in a complete TinyUSB tree in its place, so a build that is never
+      # exercised would break the next time either side moved -- and it would
+      # break on the bench, mid-diagnosis, which is the worst place for it.
+      - name: Apply and verify the overlay with the host link
+        run: |
+          # A pristine tree, not a re-patched one: apply_overlay.py anchors on
+          # upstream text and requires exactly one match, so applying it twice
+          # is an error rather than a no-op. Tracked files come back from git;
+          # the overlay's own files are untracked and are removed by hand.
+          rm -rf dspico-link
+          cp -a dspico-src dspico-link
+          rm -rf dspico-link/build-gekkopak dspico-link/src/gekkopak \
+                 dspico-link/src/gekkopakUsb
+          rm -f dspico-link/src/gekkopak*.cpp dspico-link/src/gekkopak*.h
+          git -C dspico-link checkout -- CMakeLists.txt src
+          python3 prototype/dspico-v1/apply_overlay.py dspico-link --host-link
+          python3 prototype/dspico-v1/verify_overlay.py dspico-link
+
+      - name: Build the host-link firmware
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/dspico-link/pico-sdk
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: |
+          cmake -G Ninja -S dspico-link -B dspico-link/build-gekkopak \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build dspico-link/build-gekkopak -j 4
+          test -f dspico-link/build-gekkopak/DSpico.uf2
+          arm-none-eabi-size dspico-link/build-gekkopak/DSpico.elf
+
+      # The rule the first hardware run died on. Every cartridge IRQ handler
+      # must live in main RAM (0x2...), never in XIP flash (0x1...), and that
+      # includes the trace writer now that it runs inside them.
+      - name: Assert the IRQ path is in RAM in both images
+        run: |
+          for image in dspico-src dspico-link; do
+            echo "-- $image"
+            arm-none-eabi-nm "$image/build-gekkopak/DSpico.elf" \
+              | grep -E ' T (ntrc_gekkopak|gpk_trace$)' | sort | tee /tmp/syms
+            test -s /tmp/syms
+            if grep -qE '^1' /tmp/syms; then
+              echo "IRQ-path symbol in flash in $image" >&2
+              exit 1
+            fi
+          done
+
       - name: Upload compile-proof UF2
         uses: actions/upload-artifact@v4
         with:
@@ -117,5 +166,7 @@ jobs:
           path: |
             dspico-src/build-gekkopak/DSpico.uf2
             dspico-src/build-gekkopak/DSpico.elf
+            dspico-link/build-gekkopak/DSpico.uf2
+            dspico-link/build-gekkopak/DSpico.elf
           if-no-files-found: error
           retention-days: 7
