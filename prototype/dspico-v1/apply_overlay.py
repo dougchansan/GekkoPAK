@@ -101,13 +101,21 @@ def apply_host_link(root: Path, here: Path) -> None:
         '#include "gekkopakNtr.h"\n',
         '#include "gekkopakNtr.h"\n#include "gekkopakLink.h"\n',
     )
-    # After the card transport is up and after the SD has had its chance to
-    # request BOOTSEL, so a firmware that cannot mount its card still reaches
-    # the bootloader by upstream's route.
+    # Last, and specifically *after* pwr_initPowerSaving().
+    #
+    # That function calls clock_stop(clk_usb) and pll_deinit(pll_usb) as part of
+    # stopping every clock the cartridge does not need. Bringing the link up
+    # before it therefore enumerates a controller and then removes its clock,
+    # and the port simply never appears -- with nothing to distinguish that from
+    # a link that was never built in. gekkopak_link_init() puts the USB clock
+    # back, which is only meaningful once the general teardown has run.
+    #
+    # It also stays after tryRebootToBootsel(), so a cartridge with no readable
+    # SD still reaches the bootloader by upstream's route.
     replace_once(
         main_cpp,
-        "    tryRebootToBootsel();\n",
-        "    tryRebootToBootsel();\n\n    gekkopak_link_init();\n",
+        "    pwr_initPowerSaving();\n",
+        "    pwr_initPowerSaving();\n\n    gekkopak_link_init();\n",
     )
     # In the idle loop, next to the SD pump, at thread priority. The cartridge
     # interrupt preempts everything here.

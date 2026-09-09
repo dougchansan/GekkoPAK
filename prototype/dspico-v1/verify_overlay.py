@@ -139,11 +139,27 @@ if (root / "src/gekkopakLink.cpp").exists():
             raise SystemExit(
                 f"host link: {gone} is still built; it cannot coexist with the link")
 
+    main_text = (root / "src/main.cpp").read_text(errors="replace")
+
     # The idle loop must not sleep: a host has to be answered whether or not a
     # console is attached, and __wfi() parks core0 until the next cartridge
     # interrupt, which may never arrive.
-    if "__wfi();" in (root / "src/main.cpp").read_text(errors="replace"):
+    if "__wfi();" in main_text:
         raise SystemExit("host link: main loop still sleeps; the link would stall")
+
+    # Ordering, which is not a style question. pwr_initPowerSaving() stops
+    # clk_usb and deinitialises pll_usb; gekkopak_link_init() puts them back.
+    # The wrong way round enumerates a controller and then removes its clock,
+    # and the symptom -- no serial port at all -- looks exactly like a firmware
+    # built without the link. That cost a flash to find once.
+    saving = main_text.find("pwr_initPowerSaving();")
+    link = main_text.find("gekkopak_link_init();")
+    if saving < 0 or link < 0:
+        raise SystemExit("host link: power-saving init or link init missing from main")
+    if link < saving:
+        raise SystemExit(
+            "host link: gekkopak_link_init() runs before pwr_initPowerSaving(), "
+            "which would stop the USB clock it just started")
 
     print("DSpico GekkoPAK host link verification PASS")
 
