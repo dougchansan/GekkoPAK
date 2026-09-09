@@ -95,6 +95,39 @@ def apply_host_link(root: Path, here: Path) -> None:
         "  hardware_irq hardware_resets)",
     )
 
+    # Entering unscrambled game mode powers the USB DPRAM down and takes
+    # USBCTRL out of wake_en1, so the controller stops working and can no longer
+    # wake a sleeping core0. Upstream never notices: its proxy is enabled by the
+    # console *after* game mode is reached, and the E8 INIT path calls
+    # pwr_disableUsbPowerSaving(), which undoes exactly this.
+    #
+    # The link is up from boot instead, so for it this fires at the worst
+    # possible moment -- the transition into the mode GekkoPAK runs in. The
+    # symptom is a cartridge that answers perfectly on the bench and goes silent
+    # the moment a console boots.
+    #
+    # The rest of the function is USB and nothing else, so under the host link
+    # there is nothing left to do.
+    replace_once(
+        root / "src/powerSaving.c",
+        """void pwr_enableAfterBootPowerSaving(void)
+{
+    hw_set_bits(&syscfg_hw->mempowerdown, SYSCFG_MEMPOWERDOWN_USB_BITS);
+    hw_clear_bits(&clocks_hw->wake_en1,
+        CLOCKS_WAKE_EN1_CLK_USB_USBCTRL_BITS |
+        CLOCKS_WAKE_EN1_CLK_SYS_USBCTRL_BITS);
+}""",
+        """void pwr_enableAfterBootPowerSaving(void)
+{
+#ifndef GEKKOPAK_HOST_LINK
+    hw_set_bits(&syscfg_hw->mempowerdown, SYSCFG_MEMPOWERDOWN_USB_BITS);
+    hw_clear_bits(&clocks_hw->wake_en1,
+        CLOCKS_WAKE_EN1_CLK_USB_USBCTRL_BITS |
+        CLOCKS_WAKE_EN1_CLK_SYS_USBCTRL_BITS);
+#endif
+}""",
+    )
+
     main_cpp = src / "main.cpp"
     replace_once(
         main_cpp,

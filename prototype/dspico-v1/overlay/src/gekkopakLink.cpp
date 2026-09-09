@@ -8,7 +8,9 @@
 #include "gekkopakTrace.h"
 #include "pico/bootrom.h"
 #include "hardware/irq.h"
+#include "hardware/structs/clocks.h"
 #include "hardware/structs/rosc.h"
+#include "hardware/structs/scb.h"
 #include "hardware/xosc.h"
 #include "powerSaving.h"
 #include "tusb.h"
@@ -259,22 +261,39 @@ u32 sRebootPasses;
 
 // Hands the cartridge to the bootloader.
 //
-// reset_usb_boot() calls the bootrom with whatever clock configuration is
-// current; it is not a chip reset. Upstream only ever calls it from
-// tryRebootToBootsel(), which runs before pwr_initPowerSaving() and so still
-// has every clock intact -- and even there it calls xosc_init() first.
+// reset_usb_boot() is not a chip reset. It calls into the bootrom, which
+// reboots by way of the watchdog and then re-enters USB boot on whatever clocks
+// it finds. Upstream only ever calls it from tryRebootToBootsel(), which runs
+// before pwr_initPowerSaving() and so still has every clock intact -- and even
+// there it calls xosc_init() first.
 //
-// By the time the link can be asked for a reboot, stopUnusedClocks() has
-// disabled ROSC, which the bootrom needs. Calling straight into it from here
-// left the chip in USB boot with no usable clock: no enumeration, no serial
-// port, and a host write blocked forever in the kernel. So put back what was
-// taken away before handing over.
+// By the time the link can be asked for a reboot, stopUnusedClocks() has taken
+// away things the bootrom needs, and the cost of missing any one of them is a
+// chip that stops responding with no way back but the BOOTSEL button:
+//
+//   - clk_sys to the WATCHDOG, gated off in wake_en1. This is the one that
+//     matters most: without it the reset the bootrom asks for never arrives and
+//     it spins forever, still enumerated, answering nothing.
+//   - the TIMER, gated off beside it.
+//   - ROSC, disabled outright.
+//
+// wake_en is restored wholesale rather than bit by bit. Ungating a clock to a
+// peripheral nobody is using costs nothing microseconds before a reset, and an
+// exact undo of stopUnusedClocks() would be one more thing to get wrong -- the
+// first attempt at this restored only ROSC and hung the board twice.
 void rebootToBootsel() {
+    clocks_hw->wake_en0 = ~0u;
+    clocks_hw->wake_en1 = ~0u;
+
     u32 ctrl = rosc_hw->ctrl;
     ctrl &= ~ROSC_CTRL_ENABLE_BITS;
     ctrl |= ROSC_CTRL_ENABLE_VALUE_ENABLE << ROSC_CTRL_ENABLE_LSB;
     hw_clear_bits(&rosc_hw->status, ROSC_STATUS_BADWRITE_BITS);
     rosc_hw->ctrl = ctrl;
+
+    // initDeepSleep() left SLEEPDEEP set, which would change what a wfi in the
+    // bootrom does.
+    scb_hw->scr &= ~M0PLUS_SCR_SLEEPDEEP_BITS;
 
     xosc_init();
     reset_usb_boot(0, 0);
@@ -451,6 +470,16 @@ extern "C" void gekkopak_link_init(void) {
     // port never enumerates. Same call upstream's proxy makes for the same
     // reason.
     pwr_disableUsbPowerSaving();
+
+    // Tracing on by default, in this build only.
+    //
+    // The mask is normally zero so a timing campaign measures the transport
+    // rather than the instrumentation -- but that guarantee belongs to the
+    // plain firmware, which has no link and no way to turn tracing on at all.
+    // This is the diagnosis build, and requiring a host to arm it means a run
+    // started before anyone connected records nothing, which is precisely the
+    // run that most needed recording.
+    gpk_trace_set_mask(GPK_TRACE_MASK_DEFAULT_ON);
 
     tud_init(BOARD_TUD_RHPORT);
 

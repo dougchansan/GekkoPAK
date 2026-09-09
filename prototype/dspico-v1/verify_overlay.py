@@ -108,16 +108,26 @@ if (root / "src/gekkopakLink.cpp").exists():
             "GEKKOPAK_HOST_LINK=1",
         ],
         "src/main.cpp": ["gekkopak_link_init();", "gekkopak_link_task();"],
+        # Game-mode entry must not power the USB controller down; see the note
+        # in apply_overlay.py. Without this the link dies exactly when the
+        # console starts using GekkoPAK.
+        "src/powerSaving.c": ["#ifndef GEKKOPAK_HOST_LINK"],
         # The controller has no clock until power saving is lifted, and the
         # cartridge interrupt must outrank USB: 0x40 against 0x80.
         "src/gekkopakLink.cpp": [
             "pwr_disableUsbPowerSaving();",
             "irq_set_priority(USBCTRL_IRQ, 0x80);",
             "reset_usb_boot(0, 0);",
+            # A run that happened before a host connected still has to have
+            # been recorded.
+            "gpk_trace_set_mask(GPK_TRACE_MASK_DEFAULT_ON);",
             # The bootrom runs on the clocks it is handed, and
             # stopUnusedClocks() has disabled ROSC by this point.
             "xosc_init();",
+            # The bootrom reboots through the watchdog, whose clock
+            # stopUnusedClocks() gates off along with ROSC.
             "ROSC_CTRL_ENABLE_VALUE_ENABLE",
+            "clocks_hw->wake_en1 = ~0u;",
         ],
         # Upstream tears USB down on every console reset. The link is not the
         # console's and has to survive one, or it can never observe a cold start.
