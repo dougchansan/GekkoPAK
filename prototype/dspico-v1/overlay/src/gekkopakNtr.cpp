@@ -39,6 +39,7 @@
 
 #include "gekkopak/device.h"
 #include "gekkopak/protocol.h"
+#include "gekkopakTrace.h"
 #include "ntrCardRomGameNoScramble.h"
 
 // RAM placement for the cartridge IRQ path.
@@ -63,11 +64,9 @@
 // Main RAM has ~40 KiB spare here and no such overlap, so that is where these
 // belong.
 
-#ifdef GEKKOPAK_HOST_SHIM
-#define GEKKOPAK_IRQ_FN(name) name
-#else
-#define GEKKOPAK_IRQ_FN(name) __not_in_flash_func(name)
-#endif
+// GEKKOPAK_IRQ_FN is defined in gekkopakTrace.h, which every file on this
+// path includes, so the placement rule cannot be applied to the handlers and
+// silently forgotten for the instrumentation that runs inside them.
 
 namespace {
 
@@ -171,9 +170,14 @@ void restageCompletionBlock() {
 void GEKKOPAK_IRQ_FN(blockWriteComplete)(ntr_rom_emu_t* romEmu) {
     ++sF4Complete;
     const u32 word = romEmu->cmd1;
-    if (sDevice.WriteBlock(commandIndex(romEmu), word, sBlockTx, kBlockBytes) == gp::kOk) {
+    const u32 result = sDevice.WriteBlock(commandIndex(romEmu), word, sBlockTx, kBlockBytes);
+    if (result == gp::kOk) {
         ++sF4Parsed;
     }
+    // The result code is the whole point: a rejected descriptor block and one
+    // that was never delivered are indistinguishable from the console, which
+    // sees nothing arrive either way.
+    gpk_trace(GPK_TRACE_BLOCK_PARSE, commandIndex(romEmu), static_cast<u16>(result), word);
     // A completion is now queued; have it ready before the console asks.
     stageCompletionBlock();
 }
@@ -192,6 +196,12 @@ extern "C" void gekkopak_ntr_reset(void) {
     sStagedBytes = 0;
 
     buildDiagnosticBlock();
+
+    // The ring is emptied but the mask is left alone: a host that asked for a
+    // category keeps it across the DS resetting the cartridge, which happens
+    // on every console reboot and is exactly when a transcript matters most.
+    gpk_trace_reset();
+    gpk_trace(GPK_TRACE_RESET, 0, 0, kLocalBytes);
 
     gekkopak::Device::Config config;
     config.pool = sLocal;
@@ -216,6 +226,7 @@ extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakWriteRegCmd1)(ntr_rom_emu_t* romEmu
     ntrc_finishGameNoScrambleCmd1(romEmu);
     if (commandMatches(romEmu, gp::kWireWriteReg)) {
         sDevice.WriteReg(commandIndex(romEmu), word);
+        gpk_trace(GPK_TRACE_WRITE_REG, commandIndex(romEmu), 0, word);
     }
 }
 
@@ -233,6 +244,8 @@ extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakExecCmd1)(ntr_rom_emu_t* romEmu, u3
     ntrc_finishGameNoScrambleCmd1(romEmu);
     if (commandMatches(romEmu, gp::kWireExec)) {
         sDevice.Exec(commandIndex(romEmu), word);
+        gpk_trace(GPK_TRACE_EXEC, commandIndex(romEmu),
+                  static_cast<u16>(sDevice.ReadReg(gp::kResult)), word);
     }
 }
 
@@ -270,6 +283,8 @@ extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakReadRegCmd1)(ntr_rom_emu_t* romEmu,
     ntrc_beginWrite(pio, 4);
     ntrc_writeWord(pio, value);
     ntrc_finishGameNoScrambleCmd1(romEmu);
+    // After the bus is served, never before it.
+    gpk_trace(GPK_TRACE_READ_REG, commandIndex(romEmu), 0, value);
 }
 
 // --------------------------------------------------------------------------
@@ -286,6 +301,7 @@ extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakPayloadWordCmd1)(ntr_rom_emu_t* rom
     ntrc_finishGameNoScrambleCmd1(romEmu);
     if (commandMatches(romEmu, gp::kWireWritePayloadWord)) {
         sDevice.WritePayloadWord(commandIndex(romEmu), word);
+        gpk_trace(GPK_TRACE_PAYLOAD, commandIndex(romEmu), 0, word);
     }
 }
 
@@ -313,9 +329,11 @@ extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakWriteBlockCmd1)(ntr_rom_emu_t* romE
         if (commandMatches(romEmu, gp::kWireWriteBlock)) {
             sDevice.WriteBlock(commandIndex(romEmu), word, nullptr, 0);
         }
+        gpk_trace(GPK_TRACE_BLOCK_IN, commandIndex(romEmu), GPK_TRACE_BLOCK_REFUSED, word);
         return;
     }
     ++sF4Accepted;
+    gpk_trace(GPK_TRACE_BLOCK_IN, commandIndex(romEmu), GPK_TRACE_BLOCK_ACCEPTED, word);
     // Start the data phase and return. The payload is parsed in
     // blockWriteComplete(), off the cartridge IRQ-critical path.
     ntrc_beginRead(pio, kBlockBytes);
@@ -342,16 +360,23 @@ extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakReadBlockCmd0)(ntr_rom_emu_t* romEm
     // here without waiting for the value word.
     const u8 selector = commandIndex(romEmu);
     const u8* source = sBlockZeroes;
+    u16 which = GPK_TRACE_SOURCE_ZEROES;
     if (commandMatches(romEmu, gp::kWireReadBlock)) {
         if (selector == kSelectorDiagnostic) {
             source = sBlockDiag;
+            which = GPK_TRACE_SOURCE_DIAGNOSTIC;
         } else if (selector == gp::kSelectorCompletion) {
             source = sBlockRx[sStageIndex];
+            which = GPK_TRACE_SOURCE_COMPLETION;
         }
     }
     ntrc_dmaToBus(source, kBlockBytes);
     ++sF5Sent;
     finishCmd0(romEmu);
+    // Which buffer the DMA was pointed at, recorded after it is under way. A
+    // plausible-looking block sourced from the zeroes buffer means the selector
+    // was wrong, not that the transport worked.
+    gpk_trace(GPK_TRACE_BLOCK_ARM, selector, which, sStagedBytes);
 }
 
 extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakReadBlockCmd1)(ntr_rom_emu_t* romEmu, u32 word,
@@ -371,8 +396,12 @@ extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakReadBlockCmd1)(ntr_rom_emu_t* romEm
     }
     // The data phase had to be armed before the value word arrived, so the
     // verdict on the command is delivered now.
-    if (sDevice.ValidateReadBlock(selector, word) == gp::kOk) {
-        sDevice.DropCompletions(sStagedBytes / sizeof(gp::CompletionRecordV1));
+    const u32 result = sDevice.ValidateReadBlock(selector, word);
+    u32 dropped = 0;
+    if (result == gp::kOk) {
+        dropped = sStagedBytes / sizeof(gp::CompletionRecordV1);
+        sDevice.DropCompletions(dropped);
         restageCompletionBlock();
     }
+    gpk_trace(GPK_TRACE_BLOCK_ACK, selector, static_cast<u16>(result), dropped);
 }
