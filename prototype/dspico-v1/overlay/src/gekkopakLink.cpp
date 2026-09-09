@@ -8,6 +8,8 @@
 #include "gekkopakTrace.h"
 #include "pico/bootrom.h"
 #include "hardware/irq.h"
+#include "hardware/structs/rosc.h"
+#include "hardware/xosc.h"
 #include "powerSaving.h"
 #include "tusb.h"
 
@@ -249,6 +251,35 @@ u32 parseHex(const char* s, u32 length, bool* ok) {
 // vanished and has to be guessed about.
 bool sRebootPending;
 
+// How many task passes to keep trying to flush before rebooting anyway. A host
+// that asked to reboot and then stopped reading must not be able to strand the
+// cartridge in a state where the only way out is the BOOTSEL button.
+constexpr u32 kRebootFlushPasses = 200;
+u32 sRebootPasses;
+
+// Hands the cartridge to the bootloader.
+//
+// reset_usb_boot() calls the bootrom with whatever clock configuration is
+// current; it is not a chip reset. Upstream only ever calls it from
+// tryRebootToBootsel(), which runs before pwr_initPowerSaving() and so still
+// has every clock intact -- and even there it calls xosc_init() first.
+//
+// By the time the link can be asked for a reboot, stopUnusedClocks() has
+// disabled ROSC, which the bootrom needs. Calling straight into it from here
+// left the chip in USB boot with no usable clock: no enumeration, no serial
+// port, and a host write blocked forever in the kernel. So put back what was
+// taken away before handing over.
+void rebootToBootsel() {
+    u32 ctrl = rosc_hw->ctrl;
+    ctrl &= ~ROSC_CTRL_ENABLE_BITS;
+    ctrl |= ROSC_CTRL_ENABLE_VALUE_ENABLE << ROSC_CTRL_ENABLE_LSB;
+    hw_clear_bits(&rosc_hw->status, ROSC_STATUS_BADWRITE_BITS);
+    rosc_hw->ctrl = ctrl;
+
+    xosc_init();
+    reset_usb_boot(0, 0);
+}
+
 void execute(const char* line, u32 length) {
     if (length == 0) {
         return;
@@ -300,6 +331,7 @@ void execute(const char* line, u32 length) {
             break;
         case 'B':
             sRebootPending = true;
+            sRebootPasses = 0;
             put("K B\n");
             break;
         default:
@@ -437,6 +469,19 @@ extern "C" void gekkopak_link_task(void) {
     }
     tud_task();
 
+    // Before the connection check, not after it. A host that sends `B` closes
+    // the port as soon as it sees the acknowledgement -- that is the correct
+    // thing for it to do -- and the early return below would then skip the
+    // reboot forever, leaving the request pending and the cartridge running.
+    if (sRebootPending) {
+        // Flush while anyone is still listening, but never wait indefinitely.
+        if (!tud_cdc_connected() || sOutHead == sOutTail ||
+            ++sRebootPasses >= kRebootFlushPasses) {
+            sRebootPending = false;
+            rebootToBootsel();
+        }
+    }
+
     if (!tud_cdc_connected()) {
         // Nothing is listening. Drop anything queued so that a host connecting
         // later gets the current state rather than a backlog from a run it did
@@ -461,10 +506,4 @@ extern "C" void gekkopak_link_task(void) {
     }
     pumpOutput();
 
-    if (sRebootPending && sOutHead == sOutTail) {
-        // The acknowledgement is out. Hand the port to the bootloader, which is
-        // what makes flashing scriptable: no BOOTSEL button, no power cycle.
-        sRebootPending = false;
-        reset_usb_boot(0, 0);
-    }
 }

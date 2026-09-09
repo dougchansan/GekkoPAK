@@ -119,16 +119,23 @@ def apply_host_link(root: Path, here: Path) -> None:
     )
     # In the idle loop, next to the SD pump, at thread priority. The cartridge
     # interrupt preempts everything here.
+    #
+    # The loop keeps its __wfi(). An earlier version of this overlay removed it,
+    # reasoning that the core would park forever when no console was attached --
+    # but pwr_disableUsbPowerSaving() sets the sleep_en bits for PLL_USB and
+    # USBCTRL precisely so the controller keeps running through deep sleep, and
+    # its interrupt is what wakes the core. That is upstream's own provision for
+    # its DS-side proxy and it serves the link identically.
+    #
+    # Removing it was not merely unnecessary. It left core0 spinning at 200 MHz
+    # through flash-resident code beside a cartridge bus whose boot handshake is
+    # timing-critical, and the console then stopped detecting the cartridge at
+    # all.
     replace_once(
         main_cpp,
         "        gSdCard.Update();\n        gSdCard.Update();\n",
         "        gSdCard.Update();\n        gSdCard.Update();\n        gekkopak_link_task();\n",
     )
-    # __wfi() with deep sleep enabled parks the core until the next cartridge
-    # interrupt, which may never come -- the console may be off, or hung, which
-    # are exactly the cases a host needs to be able to ask about. The link has
-    # to answer whether or not a DS is attached, so the idle loop stops idling.
-    replace_once(main_cpp, "        __wfi();\n", "")
 
 
 def main() -> None:

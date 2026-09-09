@@ -114,6 +114,10 @@ if (root / "src/gekkopakLink.cpp").exists():
             "pwr_disableUsbPowerSaving();",
             "irq_set_priority(USBCTRL_IRQ, 0x80);",
             "reset_usb_boot(0, 0);",
+            # The bootrom runs on the clocks it is handed, and
+            # stopUnusedClocks() has disabled ROSC by this point.
+            "xosc_init();",
+            "ROSC_CTRL_ENABLE_VALUE_ENABLE",
         ],
         # Upstream tears USB down on every console reset. The link is not the
         # console's and has to survive one, or it can never observe a cold start.
@@ -141,11 +145,14 @@ if (root / "src/gekkopakLink.cpp").exists():
 
     main_text = (root / "src/main.cpp").read_text(errors="replace")
 
-    # The idle loop must not sleep: a host has to be answered whether or not a
-    # console is attached, and __wfi() parks core0 until the next cartridge
-    # interrupt, which may never arrive.
-    if "__wfi();" in main_text:
-        raise SystemExit("host link: main loop still sleeps; the link would stall")
+    # The idle loop must keep sleeping. USB survives deep sleep by way of the
+    # sleep_en bits pwr_disableUsbPowerSaving() sets, so the link loses nothing;
+    # a spinning core0, on the other hand, stopped the console detecting the
+    # cartridge at all.
+    if "__wfi();" not in main_text:
+        raise SystemExit(
+            "host link: the idle loop no longer sleeps; a spinning core0 breaks "
+            "cartridge detection and USB does not need it awake")
 
     # Ordering, which is not a style question. pwr_initPowerSaving() stops
     # clk_usb and deinitialises pll_usb; gekkopak_link_init() puts them back.
