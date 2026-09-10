@@ -142,6 +142,7 @@ void emitStatus() {
     gekkopak_ntr_state_t state;
     gekkopak_ntr_state(&state);
     put("S");
+    putField("resets", state.reset_count);
     putField("f4enter", state.f4_enter);
     putField("f4acc", state.f4_accepted);
     putField("f4comp", state.f4_complete);

@@ -122,6 +122,16 @@ u32 sF4Complete; // payload fully received, completion callback fired
 u32 sF4Parsed;   // descriptors accepted by the shared core
 u32 sF5Sent;     // F5 data phases armed
 
+// Console resets seen, counted since the cartridge powered up.
+//
+// Deliberately *not* cleared by gekkopak_ntr_reset(), which is called from one:
+// a counter that a reset resets cannot report resets. This is the lowest-level
+// question that can be asked from the cartridge side -- did the console reach
+// us at all -- and it separates a connector that is not making contact from a
+// boot protocol that is failing. Nothing else available from here can tell
+// those two apart.
+u32 sResetCount;
+
 bool GEKKOPAK_IRQ_FN(commandMatches)(const ntr_rom_emu_t* romEmu, u8 opcode) {
     const u32 expected = (static_cast<u32>(opcode) << 24) | kCommandDiscriminator;
     return (romEmu->cmd0 & kCommandLowMask) == expected;
@@ -189,6 +199,8 @@ void GEKKOPAK_IRQ_FN(finishCmd0)(ntr_rom_emu_t* romEmu) {
 } // namespace
 
 extern "C" void gekkopak_ntr_reset(void) {
+    ++sResetCount;
+
     std::memset(sBlockTx, 0, sizeof(sBlockTx));
     std::memset(sBlockRx, 0, sizeof(sBlockRx));
     sStageIndex = 0;
@@ -197,11 +209,14 @@ extern "C" void gekkopak_ntr_reset(void) {
 
     buildDiagnosticBlock();
 
-    // The ring is emptied but the mask is left alone: a host that asked for a
-    // category keeps it across the DS resetting the cartridge, which happens
-    // on every console reboot and is exactly when a transcript matters most.
-    gpk_trace_reset();
-    gpk_trace(GPK_TRACE_RESET, 0, 0, kLocalBytes);
+    // The ring is *not* emptied, and the mask is left alone.
+    //
+    // Emptying it here was wrong. A console reset is exactly the event a
+    // transcript most needs to have survived -- a cartridge that is being reset
+    // repeatedly because the console cannot boot it has its whole story in the
+    // records a reset would have thrown away. The ring drops when full and
+    // reports how many, which is the honest way to run out of room.
+    gpk_trace(GPK_TRACE_RESET, 0, static_cast<u16>(sResetCount), kLocalBytes);
 
     gekkopak::Device::Config config;
     config.pool = sLocal;
@@ -233,6 +248,7 @@ extern "C" const u8* gekkopak_ntr_buffer(u32 which) {
 }
 
 extern "C" void gekkopak_ntr_state(gekkopak_ntr_state_t* out) {
+    out->reset_count = sResetCount;
     out->f4_enter = sF4Enter;
     out->f4_accepted = sF4Accepted;
     out->f4_complete = sF4Complete;

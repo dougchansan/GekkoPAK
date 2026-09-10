@@ -254,6 +254,7 @@ def resolve_mask(text: str) -> int:
 def cmd_status(link: Link, _args) -> int:
     fields = parse_status(link.request("s", ("S",)))
     order = [
+        ("resets", "console resets seen"),
         ("f4enter", "F4 commands seen"),
         ("f4acc", "F4 data phases started"),
         ("f4comp", "F4 payloads delivered"),
@@ -277,6 +278,9 @@ def cmd_status(link: Link, _args) -> int:
         rejected = fields["f4comp"] - fields["f4parse"]
         if rejected:
             print(f"\n  {rejected} delivered block(s) rejected by the device core")
+    # The lowest-level fact the cartridge can report about the console.
+    if "resets" in fields and fields["resets"] == 0:
+        print("\n  no console reset seen: the cartridge has not been reached at all")
     if fields.get("tdrop"):
         print(f"  transcript has holes: {fields['tdrop']} record(s) dropped")
     return 0

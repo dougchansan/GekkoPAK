@@ -45,6 +45,9 @@ enum {
 const u8* gekkopak_ntr_buffer(u32 which);
 
 typedef struct {
+    // Console resets seen since power-up. Survives the resets it counts, so a
+    // zero here means the console never reached the cartridge at all.
+    u32 reset_count;
     u32 f4_enter, f4_accepted, f4_complete, f4_parsed;
     u32 f5_sent;
     u32 staged_bytes;   // meaningful bytes in the staged completion block
