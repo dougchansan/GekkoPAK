@@ -558,12 +558,91 @@ u32 gpk_f4_matrix(gpk_f4_variant_t *out)
     return GPK_F4_VARIANTS;
 }
 
+
+// Raw 512-byte data-phase check.
+//
+// The lowest layer of the campaign: can the RP2040 place exactly 512 known
+// bytes onto the cartridge data phase? It reads the firmware's diagnostic
+// selector, so no allocator, job queue or completion queue can influence the
+// result, and the pattern is self-describing -- each word carries its own index
+// twice under a constant 0xF5 tag.
+//
+// Leading 0xFFFFFFFF words mean nobody drove the bus at all: the console was
+// clocking before the cartridge armed its transfer. That is the exact signature
+// the first hardware campaign saw, three undriven words ahead of the record.
+void gpk_f5_raw_test(gpk_f5_raw_t *out, u32 iterations)
+{
+    static u32 block[GPK_BLOCK_BYTES / 4];
+
+    memset(out, 0, sizeof(*out));
+    out->first_bad_word = 0xFFFFFFFFu;
+    out->magic_offset = GPK_F5_NO_MAGIC;
+
+    for (u32 iter = 0; iter < iterations; iter++) {
+        memset(block, 0, sizeof(block));
+        gpk_read_block_sel(block, GPK_SELECTOR_DIAG, GPK_BLOCK_BYTES);
+        out->attempts++;
+
+        bool match = true;
+        u32 first_bad = 0xFFFFFFFFu;
+        for (u32 i = 0; i < GPK_BLOCK_BYTES / 4; i++) {
+            if (block[i] != gpk_diag_word(i)) {
+                match = false;
+                if (first_bad == 0xFFFFFFFFu)
+                    first_bad = i;
+            }
+        }
+
+        if (match) {
+            out->passes++;
+            continue;
+        }
+
+        // Record the first failure in detail; later ones only affect the count.
+        if (out->first_bad_word == 0xFFFFFFFFu) {
+            out->first_bad_word = first_bad;
+            out->expected_word = gpk_diag_word(first_bad);
+            out->actual_word = block[first_bad];
+            memcpy(out->head, block, sizeof(out->head));
+
+            // How many leading words the cartridge never drove.
+            for (u32 i = 0; i < GPK_BLOCK_BYTES / 4; i++) {
+                if (block[i] != 0xFFFFFFFFu)
+                    break;
+                out->undriven_words++;
+            }
+            // Where the pattern actually starts, if it arrived at all.
+            const u8 *bytes = (const u8 *)block;
+            for (u32 off = 0; off + 4 <= GPK_BLOCK_BYTES; off++) {
+                if (bytes[off + 3] == 0xF5 && bytes[off + 2] == 0x00 &&
+                    bytes[off + 1] == 0x7F && bytes[off + 0] == 0xA5) {
+                    out->magic_offset = off;
+                    break;
+                }
+            }
+        }
+        gpk_tick();
+    }
+
+    out->ok = (out->attempts > 0) && (out->passes == out->attempts);
+    if (out->ok) {
+        out->magic_offset = 0;
+        memcpy(out->head, block, sizeof(out->head));
+    }
+}
+
 bool gpk_run_quick(gpk_report_t *r)
 {
     memset(r, 0, sizeof(*r));
     if (!gpk_stage_discovery(r))
         return false;
     gpk_stage_legacy(r);
+
+    // Raw transport first, protocol second. If the data phase itself is broken
+    // there is no point interpreting a completion record, and the two failures
+    // must never be reported as one.
+    gpk_f5_raw_test(&r->f5_raw, 8);
+
     bool block_ok = gpk_stage_block_roundtrip(r);
 
     // Read the RP2040 F4 counters here, not inside the stage above.
@@ -579,7 +658,7 @@ bool gpk_run_quick(gpk_report_t *r)
     r->f4_complete = gpk_read_reg(0xF2);
     r->f4_parsed   = gpk_read_reg(0xF3);
 
-    r->overall_ok = r->device_present && r->legacy_ok && block_ok;
+    r->overall_ok = r->device_present && r->legacy_ok && r->f5_raw.ok && block_ok;
     return r->overall_ok;
 }
 

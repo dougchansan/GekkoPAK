@@ -1,16 +1,37 @@
 // GekkoPAK F0-F5 handlers for DSpico's unscrambled game-mode dispatcher.
 //
 // This file is the DSpico transport adapter. It owns the cartridge bus and
-// nothing else: PIO command decode, the read/write data phases, the 512-byte
-// staging buffers, and the IRQ-path budget. Every protocol decision -- the
-// staging registers, the allocator, job handles, SUBMIT/POLL/COLLECT/FREE, the
-// GKD1/GKC1 block ABI and the completion queue -- lives in gekkopak::Device,
-// which the Azahar core device and the host model also drive.
+// nothing else: PIO command decode, the read/data phases, the 512-byte staging
+// buffers, and the IRQ-path budget. Every protocol decision lives in
+// gekkopak::Device, which the Azahar core device and the host model also drive.
 //
 // It is compiled two ways, from this one source:
 //   - into RP2040 firmware, against the real DSpico headers;
 //   - on the host, against prototype/dspico-v1/hostshim, so the conformance
 //     vectors can be replayed through the real handler code without hardware.
+//
+// ---------------------------------------------------------------------------
+// The cartridge IRQ budget
+// ---------------------------------------------------------------------------
+//
+// Two rules govern everything below, and breaking either of them produced the
+// F5 readback defect recorded in docs/HARDWARE_DSPICO_V1.md.
+//
+// 1. Handlers live in scratch RAM. Every one of DSpico's own 22 cartridge IRQ
+//    handlers is marked __scratch_y("cpu0"); ours were not, so they executed
+//    from XIP flash. A flash fetch on a cold cache costs far more than the
+//    ~4.8 us a 32-bit word takes at the 6.7 MHz card clock, and the console
+//    does not wait.
+//
+// 2. The PIO is armed first, and the data it will send is prepared in advance.
+//    ntrc_beginWrite() tells the state machine how long the data phase is; if
+//    that has not happened by the time the console starts clocking, the opening
+//    words are lost and the payload arrives shifted. Every DSpico handler that
+//    drives 512 bytes to the console arms before doing anything else, and DMAs
+//    from a buffer some earlier, non-critical code already filled.
+//
+// So the F5 completion block is staged outside the IRQ path and the handler
+// only starts a transfer that is already ready to go.
 
 #include "gekkopakNtr.h"
 
@@ -18,7 +39,34 @@
 
 #include "gekkopak/device.h"
 #include "gekkopak/protocol.h"
+#include "gekkopakTrace.h"
 #include "ntrCardRomGameNoScramble.h"
+
+// RAM placement for the cartridge IRQ path.
+//
+// These handlers must not execute from XIP flash: a fetch on a cold cache costs
+// far more than the ~4.8 us a 32-bit word takes at the 6.7 MHz card clock, and
+// the console does not wait.
+//
+// They go in .time_critical, which the Pico linker script puts in main RAM --
+// *not* in a scratch bank. SCRATCH_Y looks like the obvious home, and DSpico's
+// own handlers live there, but core0's stack shares that same 4 KiB region:
+//
+//     .scratch_y      -> SCRATCH_Y   (0x20041000, 4 KiB)
+//     .stack_dummy    -> SCRATCH_Y   __StackBottom = 0x20041a00
+//
+// and the only ASSERT in memmap_default.ld guards RAM, not this. Filling
+// SCRATCH_Y therefore links cleanly and then lets the stack quietly overwrite
+// whatever code sits above __StackBottom. That is not a theoretical hazard: it
+// is what happened, and it killed every GekkoPAK handler on hardware while
+// DSpico's own B8 handler -- which happened to land lower -- kept answering.
+//
+// Main RAM has ~40 KiB spare here and no such overlap, so that is where these
+// belong.
+
+// GEKKOPAK_IRQ_FN is defined in gekkopakTrace.h, which every file on this
+// path includes, so the placement rule cannot be applied to the handlers and
+// silently forgotten for the instrumentation that runs inside them.
 
 namespace {
 
@@ -35,56 +83,140 @@ constexpr u32 kCommandDiscriminator = 0x00474B00u;
 constexpr u32 kCommandLowMask = 0xFFFFFF00u;
 constexpr std::size_t kBlockBytes = gp::kBlockBytes;
 
+// F5 selector reserved for the raw data-phase diagnostic. It returns a fixed
+// pattern with no allocator, job queue or completion queue involved, so a
+// hardware failure can be attributed to the transport rather than the protocol.
+constexpr u8 kSelectorDiagnostic = 0x7E;
+
 alignas(4) u8 sLocal[kLocalBytes];
-// Two 512-byte staging buffers, one per direction. The write buffer is filled
-// by the NTR data phase and parsed afterwards; the read buffer is handed
-// straight to the bus DMA.
+// Console -> cartridge staging, filled by the NTR data phase.
 alignas(4) u8 sBlockTx[kBlockBytes];
-alignas(4) u8 sBlockRx[kBlockBytes];
+// Cartridge -> console staging, filled *before* a transfer is armed.
+//
+// Double-buffered, like DSpico's own SD read path. The DMA streams from one
+// buffer for as long as the console keeps clocking, which outlasts the cmd1
+// handler; restaging into the same buffer would rewrite it mid-transfer.
+alignas(4) u8 sBlockRx[2][kBlockBytes];
+u32 sStageIndex;
+// The diagnostic pattern, built once at reset.
+alignas(4) u8 sBlockDiag[kBlockBytes];
+// Driven when the console asks for a window that does not exist. The bus is
+// going to be clocked either way, so it gets zeros rather than stale data.
+alignas(4) const u8 sBlockZeroes[kBlockBytes] = {};
 
 gekkopak::Device sDevice;
 
-// F4 instrumentation.
+// How many meaningful bytes the staged completion block holds; the records
+// behind them are dropped once the console has been sent them.
+u32 sStagedBytes;
+
+// F4/F5 instrumentation.
 //
-// From the DS side an F4 that never arrives, one that arrives but whose payload
-// is not captured, and one whose descriptor is rejected are indistinguishable:
-// no completion appears and the transfer reports no error. These counters
-// separate them, and are read back through F2 at indices 0xF0-0xF3.
-u32 sF4Enter;    // cmd1 handler entered at all
+// From the DS side a transfer that never arrives, one that arrives but whose
+// payload is not captured, and one whose descriptor is rejected are
+// indistinguishable: nothing appears and no error is reported. These counters
+// separate them, and are read back through F2 at indices 0xF0-0xF4.
+u32 sF4Enter;    // F4 cmd1 handler entered at all
 u32 sF4Accepted; // passed the opcode/index/length checks and began a read
 u32 sF4Complete; // payload fully received, completion callback fired
 u32 sF4Parsed;   // descriptors accepted by the shared core
+u32 sF5Sent;     // F5 data phases armed
 
-bool commandMatches(const ntr_rom_emu_t* romEmu, u8 opcode) {
+// Console resets seen, counted since the cartridge powered up.
+//
+// Deliberately *not* cleared by gekkopak_ntr_reset(), which is called from one:
+// a counter that a reset resets cannot report resets. This is the lowest-level
+// question that can be asked from the cartridge side -- did the console reach
+// us at all -- and it separates a connector that is not making contact from a
+// boot protocol that is failing. Nothing else available from here can tell
+// those two apart.
+u32 sResetCount;
+
+bool GEKKOPAK_IRQ_FN(commandMatches)(const ntr_rom_emu_t* romEmu, u8 opcode) {
     const u32 expected = (static_cast<u32>(opcode) << 24) | kCommandDiscriminator;
     return (romEmu->cmd0 & kCommandLowMask) == expected;
 }
 
-u8 commandIndex(const ntr_rom_emu_t* romEmu) {
+u8 GEKKOPAK_IRQ_FN(commandIndex)(const ntr_rom_emu_t* romEmu) {
     return static_cast<u8>(romEmu->cmd0 & 0xFFu);
+}
+
+// Builds the deterministic diagnostic block. Each 32-bit word encodes its own
+// index twice, in two different transformations, under a constant tag:
+//
+//     word[i] = 0xF5 << 24 | i << 16 | (i ^ 0x7F) << 8 | (i + 0xA5)
+//
+// so a dump of the first bytes makes word order, byte order, a repeated FIFO
+// word, a stale buffer, truncation and any starting offset each look different
+// from the others.
+void buildDiagnosticBlock() {
+    for (u32 i = 0; i < kBlockBytes / 4u; ++i) {
+        const u32 word = (0xF5u << 24) | (i << 16) | ((i ^ 0x7Fu) << 8) | ((i + 0xA5u) & 0xFFu);
+        std::memcpy(sBlockDiag + i * 4u, &word, sizeof(word));
+    }
+}
+
+// Fills sBlockRx with the completion records currently queued. Runs outside the
+// timing-critical window: at reset, after an F4 batch is parsed, and after an
+// F5 transfer has been sent.
+void stageCompletionBlock() {
+    // A peek, not a read: the records stay queued until the console has
+    // actually been sent them, so an F2 event-depth check still sees them.
+    sStagedBytes = static_cast<u32>(
+        sDevice.PeekBlock(gp::kSelectorCompletion,
+                          gp::EncodeReadBlockWord(0, static_cast<u16>(kBlockBytes)),
+                          sBlockRx[sStageIndex], kBlockBytes));
+}
+
+// Stages into the buffer that is not currently being sent, then flips.
+void restageCompletionBlock() {
+    sStageIndex = 1u - sStageIndex;
+    stageCompletionBlock();
 }
 
 // Called once the NTR data phase has delivered all 512 bytes. Parsing and job
 // execution happen here rather than in the command handler, so the
 // timing-critical path is only "start a DMA and return".
-void blockWriteComplete(ntr_rom_emu_t* romEmu) {
+void GEKKOPAK_IRQ_FN(blockWriteComplete)(ntr_rom_emu_t* romEmu) {
     ++sF4Complete;
     const u32 word = romEmu->cmd1;
-    if (sDevice.WriteBlock(commandIndex(romEmu), word, sBlockTx, kBlockBytes) == gp::kOk) {
+    const u32 result = sDevice.WriteBlock(commandIndex(romEmu), word, sBlockTx, kBlockBytes);
+    if (result == gp::kOk) {
         ++sF4Parsed;
     }
+    // The result code is the whole point: a rejected descriptor block and one
+    // that was never delivered are indistinguishable from the console, which
+    // sees nothing arrive either way.
+    gpk_trace(GPK_TRACE_BLOCK_PARSE, commandIndex(romEmu), static_cast<u16>(result), word);
+    // A completion is now queued; have it ready before the console asks.
+    stageCompletionBlock();
 }
 
-void finishCmd0(ntr_rom_emu_t* romEmu) {
+void GEKKOPAK_IRQ_FN(finishCmd0)(ntr_rom_emu_t* romEmu) {
     ntrc_finishGameNoScrambleCmd0(romEmu);
 }
 
 } // namespace
 
 extern "C" void gekkopak_ntr_reset(void) {
+    ++sResetCount;
+
     std::memset(sBlockTx, 0, sizeof(sBlockTx));
     std::memset(sBlockRx, 0, sizeof(sBlockRx));
-    sF4Enter = sF4Accepted = sF4Complete = sF4Parsed = 0;
+    sStageIndex = 0;
+    sF4Enter = sF4Accepted = sF4Complete = sF4Parsed = sF5Sent = 0;
+    sStagedBytes = 0;
+
+    buildDiagnosticBlock();
+
+    // The ring is *not* emptied, and the mask is left alone.
+    //
+    // Emptying it here was wrong. A console reset is exactly the event a
+    // transcript most needs to have survived -- a cartridge that is being reset
+    // repeatedly because the console cannot boot it has its whole story in the
+    // records a reset would have thrown away. The ring drops when full and
+    // reports how many, which is the honest way to run out of room.
+    gpk_trace(GPK_TRACE_RESET, 0, static_cast<u16>(sResetCount), kLocalBytes);
 
     gekkopak::Device::Config config;
     config.pool = sLocal;
@@ -94,46 +226,91 @@ extern "C" void gekkopak_ntr_reset(void) {
 }
 
 // --------------------------------------------------------------------------
+// Introspection
+// --------------------------------------------------------------------------
+//
+// Off the IRQ path entirely: the host link calls these from the main loop
+// between transactions. They read the same variables the handlers maintain
+// rather than keeping a parallel copy, so a report cannot drift from what the
+// cartridge actually did.
+
+extern "C" const u8* gekkopak_ntr_buffer(u32 which) {
+    switch (which) {
+        case GEKKOPAK_BUFFER_STAGED:
+            return sBlockRx[sStageIndex];
+        case GEKKOPAK_BUFFER_DIAG:
+            return sBlockDiag;
+        case GEKKOPAK_BUFFER_LAST_IN:
+            return sBlockTx;
+        default:
+            return nullptr;
+    }
+}
+
+extern "C" void gekkopak_ntr_state(gekkopak_ntr_state_t* out) {
+    out->reset_count = sResetCount;
+    out->f4_enter = sF4Enter;
+    out->f4_accepted = sF4Accepted;
+    out->f4_complete = sF4Complete;
+    out->f4_parsed = sF4Parsed;
+    out->f5_sent = sF5Sent;
+    out->staged_bytes = sStagedBytes;
+    out->stage_index = sStageIndex;
+    out->local_bytes = kLocalBytes;
+    // Reading a register is how the console would ask, so the link asks the
+    // same way and cannot report a value the console could not have seen.
+    out->event_depth = sDevice.ReadReg(gp::kEventCompletionDepth);
+    out->result = sDevice.ReadReg(gp::kResult);
+}
+
+// --------------------------------------------------------------------------
 // F0 WRITE_REG
 // --------------------------------------------------------------------------
 
-extern "C" void ntrc_gekkopakWriteRegCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakWriteRegCmd0)(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
     finishCmd0(romEmu);
 }
 
-extern "C" void ntrc_gekkopakWriteRegCmd1(ntr_rom_emu_t* romEmu, u32 word, pio_hw_t* pio) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakWriteRegCmd1)(ntr_rom_emu_t* romEmu, u32 word,
+                                                       pio_hw_t* pio) {
+    // Release the bus before touching the device: the state machine must be
+    // advanced whatever the command turns out to be.
     ntrc_noPayload(pio);
+    ntrc_finishGameNoScrambleCmd1(romEmu);
     if (commandMatches(romEmu, gp::kWireWriteReg)) {
         sDevice.WriteReg(commandIndex(romEmu), word);
+        gpk_trace(GPK_TRACE_WRITE_REG, commandIndex(romEmu), 0, word);
     }
-    ntrc_finishGameNoScrambleCmd1(romEmu);
 }
 
 // --------------------------------------------------------------------------
 // F1 EXEC
 // --------------------------------------------------------------------------
 
-extern "C" void ntrc_gekkopakExecCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakExecCmd0)(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
     finishCmd0(romEmu);
 }
 
-extern "C" void ntrc_gekkopakExecCmd1(ntr_rom_emu_t* romEmu, u32 word, pio_hw_t* pio) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakExecCmd1)(ntr_rom_emu_t* romEmu, u32 word,
+                                                   pio_hw_t* pio) {
     ntrc_noPayload(pio);
+    ntrc_finishGameNoScrambleCmd1(romEmu);
     if (commandMatches(romEmu, gp::kWireExec)) {
         sDevice.Exec(commandIndex(romEmu), word);
+        gpk_trace(GPK_TRACE_EXEC, commandIndex(romEmu),
+                  static_cast<u16>(sDevice.ReadReg(gp::kResult)), word);
     }
-    ntrc_finishGameNoScrambleCmd1(romEmu);
 }
 
 // --------------------------------------------------------------------------
 // F2 READ_REG / EVENT
 // --------------------------------------------------------------------------
 
-extern "C" void ntrc_gekkopakReadRegCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakReadRegCmd0)(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
     finishCmd0(romEmu);
 }
 
-extern "C" void ntrc_gekkopakReadRegCmd1(ntr_rom_emu_t* romEmu, u32, pio_hw_t* pio) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakReadRegCmd1)(ntr_rom_emu_t* romEmu, u32, pio_hw_t* pio) {
     u32 value = 0;
     if (commandMatches(romEmu, gp::kWireReadReg)) {
         const u8 index = commandIndex(romEmu);
@@ -146,42 +323,51 @@ extern "C" void ntrc_gekkopakReadRegCmd1(ntr_rom_emu_t* romEmu, u32, pio_hw_t* p
             value = sF4Complete;
         else if (index == 0xF3)
             value = sF4Parsed;
+        else if (index == 0xF4)
+            value = sF5Sent;
         else
             value = sDevice.ReadReg(index);
     }
-    // Hand the response to the PIO before doing anything else: the first
-    // transaction after a pause is dropped if the handler is still busy when
-    // the next CEB edge arrives. See docs/HARDWARE_DSPICO_V1.md.
+    // Four bytes has enough slack to be armed from cmd1, and enough to tolerate
+    // running from flash: F2 register reads were measured good on hardware
+    // (31/32 at latency 4, 32/32 at 8 and above) while the 512-byte F5 in the
+    // same firmware failed every time. So this one pays for the scratch-RAM
+    // budget that the block handlers need.
     ntrc_beginWrite(pio, 4);
     ntrc_writeWord(pio, value);
     ntrc_finishGameNoScrambleCmd1(romEmu);
+    // After the bus is served, never before it.
+    gpk_trace(GPK_TRACE_READ_REG, commandIndex(romEmu), 0, value);
 }
 
 // --------------------------------------------------------------------------
 // F3 WRITE_PAYLOAD_WORD
 // --------------------------------------------------------------------------
 
-extern "C" void ntrc_gekkopakPayloadWordCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakPayloadWordCmd0)(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
     finishCmd0(romEmu);
 }
 
-extern "C" void ntrc_gekkopakPayloadWordCmd1(ntr_rom_emu_t* romEmu, u32 word, pio_hw_t* pio) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakPayloadWordCmd1)(ntr_rom_emu_t* romEmu, u32 word,
+                                                          pio_hw_t* pio) {
     ntrc_noPayload(pio);
+    ntrc_finishGameNoScrambleCmd1(romEmu);
     if (commandMatches(romEmu, gp::kWireWritePayloadWord)) {
         sDevice.WritePayloadWord(commandIndex(romEmu), word);
+        gpk_trace(GPK_TRACE_PAYLOAD, commandIndex(romEmu), 0, word);
     }
-    ntrc_finishGameNoScrambleCmd1(romEmu);
 }
 
 // --------------------------------------------------------------------------
 // F4 WRITE_BLOCK -- 512 bytes console -> cartridge
 // --------------------------------------------------------------------------
 
-extern "C" void ntrc_gekkopakWriteBlockCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakWriteBlockCmd0)(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
     finishCmd0(romEmu);
 }
 
-extern "C" void ntrc_gekkopakWriteBlockCmd1(ntr_rom_emu_t* romEmu, u32 word, pio_hw_t* pio) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakWriteBlockCmd1)(ntr_rom_emu_t* romEmu, u32 word,
+                                                         pio_hw_t* pio) {
     ++sF4Enter;
     const u32 meaningful = word & 0xFFFFu;
     if (!commandMatches(romEmu, gp::kWireWriteBlock) ||
@@ -190,16 +376,17 @@ extern "C" void ntrc_gekkopakWriteBlockCmd1(ntr_rom_emu_t* romEmu, u32 word, pio
         // The data phase has to be refused here -- the cartridge cannot start a
         // 512-byte read it has nowhere to put -- but the rejection still has to
         // reach the RESULT register, or a client cannot tell a refused block
-        // from an accepted one. Route it through the core so the status comes
-        // from the same validation every other transport uses.
+        // from an accepted one.
+        ntrc_noPayload(pio);
+        ntrc_finishGameNoScrambleCmd1(romEmu);
         if (commandMatches(romEmu, gp::kWireWriteBlock)) {
             sDevice.WriteBlock(commandIndex(romEmu), word, nullptr, 0);
         }
-        ntrc_noPayload(pio);
-        ntrc_finishGameNoScrambleCmd1(romEmu);
+        gpk_trace(GPK_TRACE_BLOCK_IN, commandIndex(romEmu), GPK_TRACE_BLOCK_REFUSED, word);
         return;
     }
     ++sF4Accepted;
+    gpk_trace(GPK_TRACE_BLOCK_IN, commandIndex(romEmu), GPK_TRACE_BLOCK_ACCEPTED, word);
     // Start the data phase and return. The payload is parsed in
     // blockWriteComplete(), off the cartridge IRQ-critical path.
     ntrc_beginRead(pio, kBlockBytes);
@@ -210,20 +397,64 @@ extern "C" void ntrc_gekkopakWriteBlockCmd1(ntr_rom_emu_t* romEmu, u32 word, pio
 // --------------------------------------------------------------------------
 // F5 READ_BLOCK -- 512 bytes cartridge -> console
 // --------------------------------------------------------------------------
+//
+// Armed in cmd0, from a buffer that is already staged. This is the shape every
+// working DSpico cartridge-to-console path uses, and the reason the previous
+// implementation failed on hardware: it built the block and armed the PIO in
+// cmd1, by which point the console had already begun clocking the data phase.
 
-extern "C" void ntrc_gekkopakReadBlockCmd0(ntr_rom_emu_t* romEmu, u32, pio_hw_t*) {
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakReadBlockCmd0)(ntr_rom_emu_t* romEmu, u32,
+                                                        pio_hw_t* pio) {
+    // Arm first, unconditionally. The console programmed a 512-byte data phase
+    // and is going to clock it whatever we decide about the command.
+    ntrc_beginWrite(pio, kBlockBytes);
+
+    // The selector lives in the low byte of cmd0, so the source can be chosen
+    // here without waiting for the value word.
+    const u8 selector = commandIndex(romEmu);
+    const u8* source = sBlockZeroes;
+    u16 which = GPK_TRACE_SOURCE_ZEROES;
+    if (commandMatches(romEmu, gp::kWireReadBlock)) {
+        if (selector == kSelectorDiagnostic) {
+            source = sBlockDiag;
+            which = GPK_TRACE_SOURCE_DIAGNOSTIC;
+        } else if (selector == gp::kSelectorCompletion) {
+            source = sBlockRx[sStageIndex];
+            which = GPK_TRACE_SOURCE_COMPLETION;
+        }
+    }
+    ntrc_dmaToBus(source, kBlockBytes);
+    ++sF5Sent;
     finishCmd0(romEmu);
+    // Which buffer the DMA was pointed at, recorded after it is under way. A
+    // plausible-looking block sourced from the zeroes buffer means the selector
+    // was wrong, not that the transport worked.
+    gpk_trace(GPK_TRACE_BLOCK_ARM, selector, which, sStagedBytes);
 }
 
-extern "C" void ntrc_gekkopakReadBlockCmd1(ntr_rom_emu_t* romEmu, u32 word, pio_hw_t* pio) {
-    if (commandMatches(romEmu, gp::kWireReadBlock)) {
-        sDevice.ReadBlock(commandIndex(romEmu), word, sBlockRx, kBlockBytes);
-    } else {
-        std::memset(sBlockRx, 0, sizeof(sBlockRx));
-    }
-    // The data phase is always a full 512 bytes so cmd0 can start the transfer
-    // without waiting for a length field.
-    ntrc_beginWrite(pio, kBlockBytes);
-    ntrc_dmaToBus(sBlockRx, kBlockBytes);
+extern "C" void GEKKOPAK_IRQ_FN(ntrc_gekkopakReadBlockCmd1)(ntr_rom_emu_t* romEmu, u32 word,
+                                                        pio_hw_t* pio) {
+    (void)pio;
     ntrc_finishGameNoScrambleCmd1(romEmu);
+
+    // Bookkeeping, after the transfer is under way.
+    if (!commandMatches(romEmu, gp::kWireReadBlock)) {
+        return;
+    }
+    const u8 selector = commandIndex(romEmu);
+    if (selector == kSelectorDiagnostic) {
+        // The diagnostic window is stateless and outside the protocol, so it
+        // consumes nothing and reports nothing.
+        return;
+    }
+    // The data phase had to be armed before the value word arrived, so the
+    // verdict on the command is delivered now.
+    const u32 result = sDevice.ValidateReadBlock(selector, word);
+    u32 dropped = 0;
+    if (result == gp::kOk) {
+        dropped = sStagedBytes / sizeof(gp::CompletionRecordV1);
+        sDevice.DropCompletions(dropped);
+        restageCompletionBlock();
+    }
+    gpk_trace(GPK_TRACE_BLOCK_ACK, selector, static_cast<u16>(result), dropped);
 }

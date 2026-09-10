@@ -66,4 +66,5 @@ Exit status: `0`.
 - It does not measure a real NTR cartridge bus, DSpico, RP2350, or FPGA.
 - Device service occurs once per emulated frontend frame in this harness rather than once per Azahar core loop.
 
-The next source-patched-core test must reproduce the same summary while also logging `Mapped GekkoPAK NTRCARD window` and `GekkoPAK NTR guest completed` from inside Azahar core code.
+The next source-patched-core test must reproduce the same summary while also logging `Mapped MMIO window at 0x1EC64000` and `GekkoPAK NTR guest completed` from inside Azahar core code.
+(The mapping line named the device until the MMIO layer was made device-agnostic; see `docs/AZAHAR_MMIO.md`.)

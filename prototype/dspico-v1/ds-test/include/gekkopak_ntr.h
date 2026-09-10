@@ -209,9 +209,27 @@ static inline void gpk_payload_word(u8 wordIndex, u32 value) { gpk_cmd_none(GPK_
 static inline void gpk_write_block(const void *block, u32 meaningfulBytes) {
     gpk_cmd_write_block(GPK_OP_WRITE_BLOCK, 0, meaningfulBytes, block);
 }
+// F5 selectors. 1 is the completion queue; 0x7E is the firmware's raw
+// data-phase diagnostic, which returns a fixed pattern with no allocator, job
+// queue or completion queue involved.
+#define GPK_SELECTOR_COMPLETION 1
+#define GPK_SELECTOR_DIAG       0x7E
+
+// F5: read a 512-byte block from `selector`. Offset must be 0.
+static inline void gpk_read_block_sel(void *block, u32 selector, u32 meaningfulBytes) {
+    gpk_cmd_read_block(GPK_OP_READ_BLOCK, selector, (meaningfulBytes << 16), block);
+}
 // F5: read the 512-byte completion block. Offset must be 0.
 static inline void gpk_read_block(void *block, u32 meaningfulBytes) {
-    gpk_cmd_read_block(GPK_OP_READ_BLOCK, 1, (meaningfulBytes << 16), block);
+    gpk_read_block_sel(block, GPK_SELECTOR_COMPLETION, meaningfulBytes);
+}
+
+// The diagnostic pattern the firmware builds, restated here so the console can
+// check it without trusting the cartridge to tell it what to expect:
+//
+//     word[i] = 0xF5 << 24 | i << 16 | (i ^ 0x7F) << 8 | (i + 0xA5)
+static inline u32 gpk_diag_word(u32 i) {
+    return (0xF5u << 24) | (i << 16) | ((i ^ 0x7Fu) << 8) | ((i + 0xA5u) & 0xFFu);
 }
 
 // Raw 8-byte command with a 4-byte read phase, using the same bus settings as

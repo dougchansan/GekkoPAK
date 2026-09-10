@@ -94,6 +94,7 @@ if(BUILD_TESTING)
         tests/conformance/targets.cpp
         prototype/dspico-v1/hostshim/dspico_host_shim.cpp
         prototype/dspico-v1/overlay/src/gekkopakNtr.cpp
+        prototype/dspico-v1/overlay/src/gekkopakTrace.cpp
     )
     target_link_libraries(gekkopak_conformance PRIVATE gekkopak_core)
     target_include_directories(gekkopak_conformance PRIVATE
@@ -106,5 +107,43 @@ if(BUILD_TESTING)
     target_compile_definitions(gekkopak_conformance PRIVATE
         GEKKOPAK_VECTOR_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/conformance/vectors")
     add_test(NAME gekkopak_conformance COMMAND gekkopak_conformance)
+
+    # The DSpico F5 data phase, driven through the real firmware handlers on the
+    # host shim. Covers the diagnostic window and the double buffering, neither
+    # of which can appear in a cross-target vector.
+    add_executable(gekkopak_dspico_f5_tests
+        tests/test_dspico_f5.cpp
+        prototype/dspico-v1/hostshim/dspico_host_shim.cpp
+        prototype/dspico-v1/overlay/src/gekkopakNtr.cpp
+        prototype/dspico-v1/overlay/src/gekkopakTrace.cpp
+    )
+    target_link_libraries(gekkopak_dspico_f5_tests PRIVATE gekkopak_core)
+    target_include_directories(gekkopak_dspico_f5_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/prototype/dspico-v1/hostshim
+        ${CMAKE_CURRENT_SOURCE_DIR}/prototype/dspico-v1/overlay/src
+    )
+    target_compile_options(gekkopak_dspico_f5_tests PRIVATE ${GEKKOPAK_WARNINGS}
+        ${GEKKOPAK_TEST_ASSERTS})
+    add_test(NAME gekkopak_dspico_f5 COMMAND gekkopak_dspico_f5_tests)
+
+    # The cartridge-side trace ring: the producer half of the host automation
+    # channel. Driven through the same handlers the firmware compiles, so what
+    # a host would read back is what the firmware would actually have recorded.
+    add_executable(gekkopak_dspico_trace_tests
+        tests/test_dspico_trace.cpp
+        prototype/dspico-v1/hostshim/dspico_host_shim.cpp
+        prototype/dspico-v1/overlay/src/gekkopakNtr.cpp
+        prototype/dspico-v1/overlay/src/gekkopakTrace.cpp
+    )
+    target_link_libraries(gekkopak_dspico_trace_tests PRIVATE gekkopak_core)
+    target_include_directories(gekkopak_dspico_trace_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/prototype/dspico-v1/hostshim
+        ${CMAKE_CURRENT_SOURCE_DIR}/prototype/dspico-v1/overlay/src
+    )
+    target_compile_options(gekkopak_dspico_trace_tests PRIVATE ${GEKKOPAK_WARNINGS}
+        ${GEKKOPAK_TEST_ASSERTS})
+    add_test(NAME gekkopak_dspico_trace COMMAND gekkopak_dspico_trace_tests)
 
 endif()

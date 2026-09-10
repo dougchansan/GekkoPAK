@@ -28,12 +28,17 @@ checks = {
         "BlockSizeMismatch",
     ],
     "src/core/hle/device/gekkopak_device.cpp": ["Device::Exec", "ProcessDescriptorBlock"],
-    # MMIO page type: the part that touches emulator internals.
-    "src/core/memory.h": ["MMIO,", "void MapMMIORegion(PageTable&"],
+    # MMIO page type: generic, and deliberately free of any GekkoPAK reference.
+    "src/core/memory.h": [
+        "MMIO,",
+        "struct MMIOHandler",
+        "bool RegisterMMIOWindow(PAddr phys_base",
+        "void MapMMIORegion(PageTable&",
+    ],
     "src/core/memory.cpp": [
         "case PageType::MMIO:",
-        "GekkoPakNtr::Read32(vaddr & CITRA_PAGE_MASK)",
-        "GekkoPakNtr::Write32(vaddr & CITRA_PAGE_MASK",
+        "u32 MMIORead32(VAddr vaddr)",
+        "void MMIOWrite32(VAddr vaddr, u32 value)",
         "void MemorySystem::MapMMIORegion",
     ],
     "src/core/hle/kernel/vm_manager.h": ["MMIO,", "void MakeMMIO(VMAHandle vma)"],
@@ -43,9 +48,12 @@ checks = {
     ],
     # Azahar integration points.
     "src/core/hle/kernel/memory.cpp": [
-        "Mapped GekkoPAK NTRCARD window",
+        "Mapped MMIO window",
+        "Memory::FindMMIOWindowByPhys",
         "address_space.MakeMMIO(vma)",
     ],
+    # The single binding site.
+    "src/core/core.cpp": ["GekkoPakNtr::Install();"],
     "src/core/hle/kernel/process.cpp": ["0x1EC64000, 0x1000"],
     "src/core/CMakeLists.txt": [
         "hle/device/gekkopak_ntr.cpp",
@@ -60,4 +68,13 @@ for rel, needles in checks.items():
     for needle in needles:
         if needle not in text:
             raise SystemExit(f"missing marker in {rel}: {needle}")
+# The memory core and VM manager are generic infrastructure. If a GekkoPAK
+# reference ever leaks into them the decoupling has regressed, so check.
+for rel in ("src/core/memory.h", "src/core/memory.cpp",
+            "src/core/hle/kernel/vm_manager.h", "src/core/hle/kernel/vm_manager.cpp",
+            "src/core/hle/kernel/memory.cpp"):
+    text = (root / rel).read_text(errors="replace")
+    if "GekkoPak" in text or "gekkopak" in text:
+        raise SystemExit(f"{rel} names GekkoPAK; the MMIO layer must stay device-agnostic")
+
 print("Azahar GekkoPAK overlay verification PASS")

@@ -16,3 +16,7 @@ prototype/dspico-v1/ds-test/build/
 prototype/dspico-v1/ds-test/*.elf
 prototype/dspico-v1/ds-test/*.nds
 prototype/dspico-v1/ds-test/*.map
+
+# Python bytecode from the host tools and their tests.
+__pycache__/
+*.pyc

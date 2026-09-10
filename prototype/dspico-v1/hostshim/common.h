@@ -10,6 +10,10 @@
 
 #include <cstdint>
 
+// Tells the GekkoPAK overlay it is being built for the host, where the Pico
+// SDK's scratch-RAM placement attributes do not exist.
+#define GEKKOPAK_HOST_SHIM 1
+
 typedef std::uint8_t u8;
 typedef std::int8_t s8;
 typedef std::uint16_t u16;

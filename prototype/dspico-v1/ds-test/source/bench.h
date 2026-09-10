@@ -35,6 +35,24 @@ typedef struct {
     bool ok;
 } gpk_batch_result_t;
 
+// Raw F5 data-phase result.
+//
+// This is the lowest-level question the campaign has to answer: can the RP2040
+// place exactly 512 known bytes onto the cartridge data phase? It runs against
+// the firmware's diagnostic selector, so nothing above the transport -- no
+// allocator, no job queue, no completion queue -- can affect the answer.
+typedef struct {
+    bool ok;              // all 128 words exactly as expected
+    u32  attempts;        // transfers issued
+    u32  passes;          // transfers that matched completely
+    u32  first_bad_word;  // index of the first mismatching word, or 0xFFFFFFFF
+    u32  expected_word;   // what that word should have been
+    u32  actual_word;     // what arrived
+    u32  magic_offset;    // byte offset of the 0xF5 tag, or GPK_F5_NO_MAGIC
+    u32  undriven_words;  // leading words reading 0xFFFFFFFF, i.e. nobody drove the bus
+    u8   head[16];        // first bytes as received, for the summary screen
+} gpk_f5_raw_t;
+
 typedef struct {
     bool  device_present;
     int   init_layer;
@@ -44,6 +62,7 @@ typedef struct {
     u32   transport;
     bool  f4_ok;
     bool  f5_ok;
+    gpk_f5_raw_t f5_raw;
     bool  checksum_ok;
     u32   checksum;
     u32   legacy_checksum;
@@ -109,6 +128,9 @@ typedef struct {
 } gpk_f5_variant_t;
 
 #define GPK_F5_NO_MAGIC 0xFFFFFFFFu
+
+// Raw 512-byte data-phase check against the diagnostic selector.
+void gpk_f5_raw_test(gpk_f5_raw_t *out, u32 iterations);
 
 u32 gpk_f5_matrix(gpk_f5_variant_t *out);
 u32 gpk_f4_matrix(gpk_f4_variant_t *out);
